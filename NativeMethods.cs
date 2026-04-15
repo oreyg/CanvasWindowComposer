@@ -135,6 +135,29 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool EndDeferWindowPos(IntPtr hWinPosInfo);
 
+    // --- DPI ---
+    [DllImport("user32.dll")]
+    public static extern uint GetDpiForWindow(IntPtr hwnd);
+
+    // --- WinEvent hook (window state changes) ---
+    public delegate void WinEventDelegate(
+        IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
+        int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetWinEventHook(
+        uint eventMin, uint eventMax, IntPtr hmodWinEventProc,
+        WinEventDelegate lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool UnhookWinEvent(IntPtr hWinEventHook);
+
+    public const uint EVENT_SYSTEM_MINIMIZEEND = 0x0017; // window restored
+    public const uint EVENT_OBJECT_SHOW = 0x8002;        // window shown
+    public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+    public const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
+
     // --- Keyboard state ---
     [DllImport("user32.dll")]
     public static extern short GetKeyState(int nVirtKey);
@@ -146,6 +169,12 @@ internal static class NativeMethods
 
     // SetWindowPos flags (additional)
     public const uint SWP_NOMOVE = 0x0002;
+
+    // --- SendMessage ---
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    public static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    public const uint WM_DPICHANGED = 0x02E0;
 
     // Taskbar class name check
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
