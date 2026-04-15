@@ -310,6 +310,8 @@ internal sealed class SearchOverlay : Form
         if (_canvas.Windows.TryGetValue(hWnd, out var current))
             world = current;
 
+        NativeMethods.SetForegroundWindow(hWnd);
+
         var screen = Screen.PrimaryScreen!.WorkingArea;
         _canvas.CenterOn(world.X, world.Y, world.W, world.H, screen.Width, screen.Height);
         _wm.Reproject(updateDpi: true);
