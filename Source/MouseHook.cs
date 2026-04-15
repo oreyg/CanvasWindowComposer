@@ -150,8 +150,8 @@ internal sealed class MouseHook : IDisposable
                     break;
 
                 case NativeMethods.WM_MOUSEWHEEL:
-                    // Ctrl+ScrollWheel on desktop = zoom
-                    if (IsCtrlDown() && IsDesktopOrTaskbarAt(hookStruct.pt))
+                    // Alt+ScrollWheel on desktop = zoom
+                    if (IsAltDown() && IsDesktopOrTaskbarAt(hookStruct.pt))
                     {
                         // mouseData high word = scroll delta (positive = scroll up = zoom in)
                         int delta = (short)(hookStruct.mouseData >> 16);
@@ -168,9 +168,9 @@ internal sealed class MouseHook : IDisposable
         return NativeMethods.CallNextHookEx(_hookId, nCode, wParam, lParam);
     }
 
-    private static bool IsCtrlDown()
+    private static bool IsAltDown()
     {
-        return (NativeMethods.GetKeyState(NativeMethods.VK_CONTROL) & 0x8000) != 0;
+        return (NativeMethods.GetKeyState(NativeMethods.VK_MENU) & 0x8000) != 0;
     }
 
     private static bool IsDesktopOrTaskbarAt(NativeMethods.POINT pt)

@@ -32,7 +32,10 @@ internal sealed class TrayApp : ApplicationContext
         _inertia.SetMinimap(_minimap);
         _mouseHook = new MouseHook();
 
-        _mouseHook.DragStarted += () => _inertia.Cancel();
+        _mouseHook.DragStarted += () =>
+        {
+            _inertia.Cancel();
+        };
 
         _moveTimer = new Timer { Interval = 16 };
         _moveTimer.Tick += OnMoveTick;
@@ -80,6 +83,7 @@ internal sealed class TrayApp : ApplicationContext
     private void OnMoveTick(object? sender, EventArgs e)
     {
         bool moved = false;
+        bool zoomed = false;
 
         if (_mouseHook.TryDrainDelta(out int dx, out int dy))
         {
@@ -93,14 +97,16 @@ internal sealed class TrayApp : ApplicationContext
 
         if (_mouseHook.TryDrainZoom(out int scrollDelta, out int cx, out int cy))
         {
+            _inertia.Cancel();
             _wm.Reconcile();
             _canvas.ZoomAt(scrollDelta, cx, cy);
             moved = true;
+            zoomed = true;
         }
 
         if (moved)
         {
-            _wm.Reproject();
+            _wm.Reproject(updateDpi: zoomed);
             _minimap.NotifyCanvasChanged();
         }
 
