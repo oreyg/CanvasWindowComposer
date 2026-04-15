@@ -61,13 +61,21 @@ internal sealed class WindowManager
 
             // Clip off-screen windows to an empty region so they render
             // nothing but stay positioned — prevents apps from fighting back.
-            if (!onScreen && !_clippedWindows.Contains(hWnd))
+            bool wasClipped = _clippedWindows.Contains(hWnd);
+            if (!onScreen)
             {
-                IntPtr emptyRgn = NativeMethods.CreateRectRgn(0, 0, 0, 0);
-                NativeMethods.SetWindowRgn(hWnd, emptyRgn, true);
-                _clippedWindows.Add(hWnd);
+                if (!wasClipped)
+                {
+                    NativeMethods.SetWindowRgn(hWnd, NativeMethods.CreateRectRgn(0, 0, 0, 0), true);
+                    _clippedWindows.Add(hWnd);
+                    var (px, py) = ClampToScreenEdge(sx, sy, sw, sh);
+                    batch.Add((hWnd, px, py, sw, sh, false));
+                    _lastScreen[hWnd] = (px, py, sw, sh);
+                }
+                continue;
             }
-            else if (onScreen && _clippedWindows.Contains(hWnd))
+
+            if (wasClipped)
             {
                 NativeMethods.SetWindowRgn(hWnd, IntPtr.Zero, true);
                 _clippedWindows.Remove(hWnd);
@@ -281,6 +289,43 @@ internal sealed class WindowManager
             return false;
         int style = NativeMethods.GetWindowLong(hWnd, NativeMethods.GWL_STYLE);
         return (style & (int)NativeMethods.WS_MINIMIZE) == 0;
+    }
+
+    /// <summary>
+    /// Clamp window position so it sits just outside the nearest screen edge.
+    /// This hides DWM border/shadow effects that would bleed onto the visible area.
+    /// </summary>
+    private static (int x, int y) ClampToScreenEdge(int sx, int sy, int sw, int sh)
+    {
+        // Find the nearest screen
+        int bestDist = int.MaxValue;
+        var nearest = System.Windows.Forms.Screen.PrimaryScreen!.WorkingArea;
+
+        foreach (var screen in System.Windows.Forms.Screen.AllScreens)
+        {
+            var wa = screen.WorkingArea;
+            int cx = sx + sw / 2;
+            int cy = sy + sh / 2;
+            int scx = wa.Left + wa.Width / 2;
+            int scy = wa.Top + wa.Height / 2;
+            int dist = Math.Abs(cx - scx) + Math.Abs(cy - scy);
+            if (dist < bestDist)
+            {
+                bestDist = dist;
+                nearest = wa;
+            }
+        }
+
+        // Park 1px inside the nearest edge so the OS considers it "on-screen"
+        int px = sx, py = sy;
+
+        if (sx + sw <= nearest.Left)        px = nearest.Left - sw + 1;
+        else if (sx >= nearest.Right)       px = nearest.Right - 1;
+
+        if (sy + sh <= nearest.Top)         py = nearest.Top - sh + 1;
+        else if (sy >= nearest.Bottom)      py = nearest.Bottom - 1;
+
+        return (px, py);
     }
 
     /// <summary>Check if a rect overlaps with any monitor's working area (excludes taskbars).</summary>
