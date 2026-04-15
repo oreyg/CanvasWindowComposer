@@ -19,6 +19,9 @@ internal sealed class WindowManager
     // Track last projected screen positions to detect manual moves
     private readonly Dictionary<IntPtr, (int x, int y, int w, int h)> _lastScreen = new();
 
+    // Windows we auto-hidden (so we don't restore user-minimized ones)
+    private readonly HashSet<IntPtr> _autoHidden = new();
+
     public WindowManager(Canvas canvas, DllInjector injector, ZoomSharedMemory sharedMem)
     {
         _canvas = canvas;
@@ -38,6 +41,29 @@ internal sealed class WindowManager
         if (updateDpi && isZoomed)
             _sharedMem.Write(_canvas.Zoom);
 
+        // Pass 1: auto-hide/show off-screen windows
+        foreach (var (hWnd, world) in _canvas.Windows)
+        {
+            var (sx, sy) = _canvas.WorldToScreen(world.X, world.Y);
+            var (sw, sh) = _canvas.WorldToScreenSize(world.W, world.H);
+            bool onScreen = IsOnAnyScreen(sx, sy, sw, sh);
+
+            if (!onScreen && !_autoHidden.Contains(hWnd) && NativeMethods.IsWindowVisible(hWnd))
+            {
+                if (CanHideShow(hWnd))
+                {
+                    NativeMethods.ShowWindow(hWnd, NativeMethods.SW_HIDE);
+                    _autoHidden.Add(hWnd);
+                }
+            }
+            else if (onScreen && _autoHidden.Contains(hWnd))
+            {
+                NativeMethods.ShowWindow(hWnd, NativeMethods.SW_SHOW);
+                _autoHidden.Remove(hWnd);
+            }
+        }
+
+        // Pass 2: build batch for all visible windows
         var batch = new List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)>();
         var dpiWindows = (updateDpi && isZoomed) ? new List<IntPtr>() : null;
 
@@ -52,11 +78,10 @@ internal sealed class WindowManager
             batch.Add((hWnd, sx, sy, sw, sh, false));
             _lastScreen[hWnd] = (sx, sy, sw, sh);
 
-            if (dpiWindows != null)
+            if (dpiWindows != null && IsDpiAdaptive(hWnd))
             {
                 InjectDpiHook(hWnd);
-                if (IsDpiAdaptive(hWnd))
-                    dpiWindows.Add(hWnd);
+                dpiWindows.Add(hWnd);
             }
         }
 
@@ -114,16 +139,13 @@ internal sealed class WindowManager
         _lastScreen[hWnd] = (sx, sy, sw, sh);
 
         bool isZoomed = Math.Abs(_canvas.Zoom - 1.0) > 0.001;
-        if (isZoomed)
+        if (isZoomed && IsDpiAdaptive(hWnd))
         {
             InjectDpiHook(hWnd);
-            if (IsDpiAdaptive(hWnd))
-            {
-                uint virtualDpi = (uint)(_baseDpi * _canvas.Zoom + 0.5);
-                SendDpiChanged(new List<IntPtr> { hWnd }, virtualDpi);
-                NativeMethods.RedrawWindow(hWnd, IntPtr.Zero, IntPtr.Zero,
-                    NativeMethods.RDW_INVALIDATE | NativeMethods.RDW_UPDATENOW | NativeMethods.RDW_ALLCHILDREN);
-            }
+            uint virtualDpi = (uint)(_baseDpi * _canvas.Zoom + 0.5);
+            SendDpiChanged(new List<IntPtr> { hWnd }, virtualDpi);
+            NativeMethods.RedrawWindow(hWnd, IntPtr.Zero, IntPtr.Zero,
+                NativeMethods.RDW_INVALIDATE | NativeMethods.RDW_UPDATENOW | NativeMethods.RDW_ALLCHILDREN);
         }
     }
 
@@ -132,24 +154,28 @@ internal sealed class WindowManager
     /// </summary>
     public void Reconcile()
     {
-        foreach (var (hWnd, world) in _canvas.Windows)
+        foreach (var (hWnd, _) in _canvas.Windows)
+            ReconcileWindow(hWnd);
+    }
+
+    /// <summary>Update a single window's world position from its actual screen position.</summary>
+    public void ReconcileWindow(IntPtr hWnd)
+    {
+        if (!IsWindowActive(hWnd))
+            return;
+
+        if (!_lastScreen.TryGetValue(hWnd, out var last))
+            return;
+
+        NativeMethods.GetWindowRect(hWnd, out var rect);
+        int ax = rect.Left, ay = rect.Top;
+        int aw = rect.Right - rect.Left, ah = rect.Bottom - rect.Top;
+
+        if (Math.Abs(ax - last.x) > 2 || Math.Abs(ay - last.y) > 2 ||
+            Math.Abs(aw - last.w) > 2 || Math.Abs(ah - last.h) > 2)
         {
-            if (!IsWindowActive(hWnd))
-                continue;
-
-            if (!_lastScreen.TryGetValue(hWnd, out var last))
-                continue;
-
-            NativeMethods.GetWindowRect(hWnd, out var rect);
-            int ax = rect.Left, ay = rect.Top;
-            int aw = rect.Right - rect.Left, ah = rect.Bottom - rect.Top;
-
-            if (Math.Abs(ax - last.x) > 2 || Math.Abs(ay - last.y) > 2 ||
-                Math.Abs(aw - last.w) > 2 || Math.Abs(ah - last.h) > 2)
-            {
-                _canvas.SetWindowFromScreen(hWnd, ax, ay, aw, ah);
-                _lastScreen[hWnd] = (ax, ay, aw, ah);
-            }
+            _canvas.SetWindowFromScreen(hWnd, ax, ay, aw, ah);
+            _lastScreen[hWnd] = (ax, ay, aw, ah);
         }
     }
 
@@ -159,6 +185,9 @@ internal sealed class WindowManager
         var stale = new List<IntPtr>();
         foreach (var hWnd in _canvas.Windows.Keys)
         {
+            // Don't remove windows we auto-hidden
+            if (_autoHidden.Contains(hWnd))
+                continue;
             if (!NativeMethods.IsWindowVisible(hWnd))
                 stale.Add(hWnd);
         }
@@ -193,6 +222,11 @@ internal sealed class WindowManager
     /// <summary>Reset: restore all windows to world positions, eject hooks, clear canvas.</summary>
     public void Reset()
     {
+        // Show all auto-hidden windows first
+        foreach (var hWnd in _autoHidden)
+            NativeMethods.ShowWindow(hWnd, NativeMethods.SW_SHOW);
+        _autoHidden.Clear();
+
         _canvas.ResetCamera();
         _sharedMem.Write(1.0);
 
@@ -249,6 +283,47 @@ internal sealed class WindowManager
         return (style & (int)NativeMethods.WS_MINIMIZE) == 0;
     }
 
+    /// <summary>Check if a rect overlaps with any monitor's working area (excludes taskbars).</summary>
+    private static bool IsOnAnyScreen(int rx, int ry, int rw, int rh)
+    {
+        foreach (var screen in System.Windows.Forms.Screen.AllScreens)
+        {
+            var wa = screen.WorkingArea;
+            if (rx + rw > wa.Left && rx < wa.Right &&
+                ry + rh > wa.Top  && ry < wa.Bottom)
+                return true;
+        }
+        return false;
+    }
+
+    // Programs where SW_HIDE/SW_SHOW is nesessary
+    private static readonly HashSet<string> HideShowAllowlist = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "devenv",  // Visual Studio
+    };
+
+    private readonly Dictionary<uint, bool> _hideShowCache = new();
+
+    /// <summary>Check if this window's process supports SW_HIDE/SW_SHOW</summary>
+    private bool CanHideShow(IntPtr hWnd)
+    {
+        NativeMethods.GetWindowThreadProcessId(hWnd, out uint pid);
+
+        if (_hideShowCache.TryGetValue(pid, out bool cached))
+            return cached;
+
+        bool allowed = false;
+        try
+        {
+            using var proc = System.Diagnostics.Process.GetProcessById((int)pid);
+            allowed = HideShowAllowlist.Contains(proc.ProcessName);
+        }
+        catch { }
+
+        _hideShowCache[pid] = allowed;
+        return allowed;
+    }
+
     private static void ForceRepaint(List<IntPtr> windows)
     {
         const uint flags = NativeMethods.RDW_INVALIDATE | NativeMethods.RDW_UPDATENOW | NativeMethods.RDW_ALLCHILDREN;
@@ -279,7 +354,6 @@ internal sealed class WindowManager
     private void InjectDpiHook(IntPtr hWnd)
     {
         if (!_injector.DllExists) return;
-        if (!IsDpiAdaptive(hWnd)) return;
 
         NativeMethods.GetWindowThreadProcessId(hWnd, out uint pid);
 
@@ -370,7 +444,7 @@ internal sealed class WindowManager
     };
 
     /// <summary>Check whether a window should be managed by the canvas.</summary>
-    public static bool IsManageable(IntPtr hWnd, uint ownPid)
+    public static bool IsManageable(IntPtr hWnd, uint ownPid, bool allowMinimized = false)
     {
         if (!NativeMethods.IsWindowVisible(hWnd))
             return false;
@@ -384,7 +458,7 @@ internal sealed class WindowManager
 
         if ((style & (int)NativeMethods.WS_MAXIMIZE) != 0)
             return false;
-        if ((style & (int)NativeMethods.WS_MINIMIZE) != 0)
+        if (!allowMinimized && (style & (int)NativeMethods.WS_MINIMIZE) != 0)
             return false;
 
         if ((exStyle & (int)NativeMethods.WS_EX_TOOLWINDOW) != 0 &&

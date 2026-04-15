@@ -16,6 +16,7 @@ internal sealed class MouseHook : IDisposable
     private IntPtr _hookId = IntPtr.Zero;
     private readonly NativeMethods.LowLevelMouseProc _proc;
     private bool _dragging;
+    private bool _altDrag; // true when drag was initiated with Alt (consume all input)
     private NativeMethods.POINT _lastPoint;
 
     // Accumulated drag delta (written by hook, read by timer)
@@ -110,9 +111,12 @@ internal sealed class MouseHook : IDisposable
             switch (msg)
             {
                 case NativeMethods.WM_MBUTTONDOWN:
-                    if (IsDesktopOrTaskbarAt(hookStruct.pt))
+                    // Middle-click on desktop, or Alt-only+middle-click anywhere
+                    bool alt = IsAltDown() && !IsCtrlDown() && !IsShiftDown();
+                    if (IsDesktopOrTaskbarAt(hookStruct.pt) || alt)
                     {
                         _dragging = true;
+                        _altDrag = alt;
                         _lastPoint = hookStruct.pt;
                         _pendingDx = 0;
                         _pendingDy = 0;
@@ -136,7 +140,9 @@ internal sealed class MouseHook : IDisposable
                             _hasPending = true;
                         }
 
-                        // Don't consume — let the cursor move freely
+                        // Don't consume moves — cursor must move freely.
+                        // The underlying window won't scroll because we
+                        // consumed WM_MBUTTONDOWN so it never saw the click.
                     }
                     break;
 
@@ -168,10 +174,14 @@ internal sealed class MouseHook : IDisposable
         return NativeMethods.CallNextHookEx(_hookId, nCode, wParam, lParam);
     }
 
-    private static bool IsAltDown()
-    {
-        return (NativeMethods.GetKeyState(NativeMethods.VK_MENU) & 0x8000) != 0;
-    }
+    private static bool IsAltDown() =>
+        (NativeMethods.GetKeyState(NativeMethods.VK_MENU) & 0x8000) != 0;
+
+    private static bool IsCtrlDown() =>
+        (NativeMethods.GetKeyState(NativeMethods.VK_CONTROL) & 0x8000) != 0;
+
+    private static bool IsShiftDown() =>
+        (NativeMethods.GetKeyState(NativeMethods.VK_SHIFT) & 0x8000) != 0;
 
     private static bool IsDesktopOrTaskbarAt(NativeMethods.POINT pt)
     {

@@ -81,6 +81,13 @@ internal sealed class Canvas
         _camY = worldY - screenCy / _zoom;
     }
 
+    /// <summary>Center the camera on a world-space rectangle.</summary>
+    public void CenterOn(double worldX, double worldY, double worldW, double worldH, int screenW, int screenH)
+    {
+        _camX = worldX + worldW / 2 - screenW / (2 * _zoom);
+        _camY = worldY + worldH / 2 - screenH / (2 * _zoom);
+    }
+
     public void ResetCamera()
     {
         _camX = 0;
