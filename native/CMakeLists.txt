@@ -5,14 +5,14 @@ set(CMAKE_C_STANDARD 11)
 
 add_library(DpiHook SHARED
     DpiHook.c
-    minhook/hook.c
-    minhook/buffer.c
-    minhook/trampoline.c
-    minhook/hde/hde32.c
-    minhook/hde/hde64.c
+    minhook/src/hook.c
+    minhook/src/buffer.c
+    minhook/src/trampoline.c
+    minhook/src/hde/hde32.c
+    minhook/src/hde/hde64.c
 )
 
-target_include_directories(DpiHook PRIVATE minhook minhook/include)
+target_include_directories(DpiHook PRIVATE minhook/src minhook/include)
 
 # No default lib dependencies beyond Windows system DLLs
 target_link_libraries(DpiHook PRIVATE user32 shcore)
