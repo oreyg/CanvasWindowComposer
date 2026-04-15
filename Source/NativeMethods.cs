@@ -159,6 +159,10 @@ internal static class NativeMethods
     public static extern IntPtr WindowFromPoint(POINT point);
 
     [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
     public static extern IntPtr GetParent(IntPtr hWnd);
 
     [DllImport("user32.dll")]
