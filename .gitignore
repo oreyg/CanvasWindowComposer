@@ -28,3 +28,6 @@ bld/
 canvas_debug.log
 .claude/
 native/build/
+publish*/
+Install/publish-fd/
+Install/CanvasWindowComposer-Setup.exe
