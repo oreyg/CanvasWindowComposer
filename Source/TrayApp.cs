@@ -16,9 +16,12 @@ internal sealed class TrayApp : ApplicationContext
     private readonly Canvas _canvas;
     private readonly WindowManager _wm;
     private readonly MinimapOverlay _minimap;
+    private readonly SearchOverlay _search;
+    private readonly HotkeyWindow _hotkeyWindow;
     private bool _enabled = true;
     private int _reconcileCounter;
-    private IntPtr _winEventHook;
+    private IntPtr _winEventHook_System_MinimizeEnd;
+    private IntPtr _winEventHook_Object_LocationChange;
     private readonly NativeMethods.WinEventDelegate _winEventProc;
 
     public TrayApp()
@@ -28,6 +31,8 @@ internal sealed class TrayApp : ApplicationContext
         _canvas = new Canvas();
         _wm = new WindowManager(_canvas, _injector, _sharedMem);
         _minimap = new MinimapOverlay(_canvas);
+        _search = new SearchOverlay(_canvas, _wm, _minimap);
+        _hotkeyWindow = new HotkeyWindow(() => _search.Toggle());
         _inertia = new InertiaEngine(_canvas, _wm);
         _inertia.SetMinimap(_minimap);
         _mouseHook = new MouseHook();
@@ -64,9 +69,16 @@ internal sealed class TrayApp : ApplicationContext
         _mouseHook.Install();
 
         _winEventProc = OnWinEvent;
-        _winEventHook = NativeMethods.SetWinEventHook(
+        _winEventHook_System_MinimizeEnd = NativeMethods.SetWinEventHook(
             NativeMethods.EVENT_SYSTEM_MINIMIZEEND,
             NativeMethods.EVENT_SYSTEM_MINIMIZEEND,
+            IntPtr.Zero,
+            _winEventProc,
+            0, 0,
+            NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
+        _winEventHook_Object_LocationChange = NativeMethods.SetWinEventHook(
+            NativeMethods.EVENT_OBJECT_LOCATIONCHANGE,
+            NativeMethods.EVENT_OBJECT_LOCATIONCHANGE,
             IntPtr.Zero,
             _winEventProc,
             0, 0,
@@ -76,8 +88,20 @@ internal sealed class TrayApp : ApplicationContext
     private void OnWinEvent(IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
         int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
     {
-        if (eventType == NativeMethods.EVENT_SYSTEM_MINIMIZEEND && _canvas.IsTransformed)
-            _wm.ReprojectWindow(hwnd);
+        if (!_canvas.IsTransformed) return;
+
+        switch (eventType)
+        {
+            case NativeMethods.EVENT_SYSTEM_MINIMIZEEND:
+                _wm.ReprojectWindow(hwnd);
+                break;
+
+            case NativeMethods.EVENT_OBJECT_LOCATIONCHANGE:
+                // Only top-level window moves, not child controls
+                if (idObject == NativeMethods.OBJID_WINDOW && _canvas.HasWindow(hwnd))
+                    _wm.ReconcileWindow(hwnd);
+                break;
+        }
     }
 
     private void OnMoveTick(object? sender, EventArgs e)
@@ -138,9 +162,14 @@ internal sealed class TrayApp : ApplicationContext
     {
         _moveTimer.Stop();
         _moveTimer.Dispose();
-        if (_winEventHook != IntPtr.Zero)
-            NativeMethods.UnhookWinEvent(_winEventHook);
+        if (_winEventHook_System_MinimizeEnd != IntPtr.Zero)
+            NativeMethods.UnhookWinEvent(_winEventHook_System_MinimizeEnd);
+        if (_winEventHook_Object_LocationChange != IntPtr.Zero)
+            NativeMethods.UnhookWinEvent(_winEventHook_Object_LocationChange);
         _inertia.Cancel();
+        _search.Close();
+        _search.Dispose();
+        _hotkeyWindow.Dispose();
         _minimap.Close();
         _minimap.Dispose();
         _wm.Reset();

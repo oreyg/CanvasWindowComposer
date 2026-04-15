@@ -5,13 +5,19 @@ namespace CanvasDesktop;
 
 internal static class NativeMethods
 {
-    // --- Mouse Hook ---
-    public const int WH_MOUSE_LL = 14;
-    public const int WM_MBUTTONDOWN = 0x0207;
-    public const int WM_MBUTTONUP = 0x0208;
-    public const int WM_MOUSEMOVE = 0x0200;
+    // ==================== STRUCTS & DELEGATES ====================
 
     public delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+    public delegate void WinEventDelegate(
+        IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
+        int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT { public int X, Y; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT { public int Left, Top, Right, Bottom; }
 
     [StructLayout(LayoutKind.Sequential)]
     public struct MSLLHOOKSTRUCT
@@ -23,22 +29,80 @@ internal static class NativeMethods
         public IntPtr dwExtraInfo;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    public struct POINT
-    {
-        public int X;
-        public int Y;
-    }
+    // ==================== CONSTANTS ====================
 
-    [StructLayout(LayoutKind.Sequential)]
-    public struct RECT
-    {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
-    }
+    // --- Mouse hook ---
+    public const int WH_MOUSE_LL = 14;
+    public const int WM_MBUTTONDOWN = 0x0207;
+    public const int WM_MBUTTONUP = 0x0208;
+    public const int WM_MOUSEMOVE = 0x0200;
+    public const int WM_MOUSEWHEEL = 0x020A;
 
+    // --- ShowWindow commands ---
+    public const int SW_HIDE = 0;
+    public const int SW_SHOW = 5;
+    public const int SW_MINIMIZE = 6;
+    public const int SW_RESTORE = 9;
+
+    // --- GetWindowLong indices ---
+    public const int GWL_STYLE = -16;
+    public const int GWL_EXSTYLE = -20;
+
+    // --- Window styles ---
+    public const uint WS_MAXIMIZE = 0x01000000;
+    public const uint WS_MINIMIZE = 0x20000000;
+    public const uint WS_VISIBLE = 0x10000000;
+    public const uint WS_EX_TOOLWINDOW = 0x00000080;
+    public const uint WS_EX_APPWINDOW = 0x00040000;
+    public const uint WS_EX_NOACTIVATE = 0x08000000;
+
+    // --- SetWindowPos flags ---
+    public const uint SWP_NOSIZE = 0x0001;
+    public const uint SWP_NOMOVE = 0x0002;
+    public const uint SWP_NOZORDER = 0x0004;
+    public const uint SWP_NOACTIVATE = 0x0010;
+    public const uint SWP_ASYNCWINDOWPOS = 0x4000;
+
+    // --- GetAncestor flags ---
+    public const uint GA_ROOT = 2;
+
+    // --- DWM attributes ---
+    public const int DWMWA_CLOAKED = 14;
+
+    // --- DPI awareness ---
+    public const int DPI_AWARENESS_UNAWARE = 0;
+    public const int DPI_AWARENESS_SYSTEM_AWARE = 1;
+    public const int DPI_AWARENESS_PER_MONITOR_AWARE = 2;
+
+    // --- WinEvent constants ---
+    public const uint EVENT_SYSTEM_MINIMIZEEND = 0x0017;
+    public const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
+    public const uint EVENT_OBJECT_SHOW = 0x8002;
+    public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+    public const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
+    public const int OBJID_WINDOW = 0;
+
+    // --- Repaint flags ---
+    public const uint RDW_INVALIDATE = 0x0001;
+    public const uint RDW_UPDATENOW = 0x0100;
+    public const uint RDW_ALLCHILDREN = 0x0080;
+
+    // --- Keyboard ---
+    public const int VK_SHIFT = 0x10;
+    public const int VK_CONTROL = 0x11;
+    public const int VK_MENU = 0x12;
+
+    // --- Global hotkeys ---
+    public const uint MOD_ALT = 0x0001;
+    public const uint MOD_NOREPEAT = 0x4000;
+    public const int WM_HOTKEY = 0x0312;
+
+    // --- Messages ---
+    public const uint WM_DPICHANGED = 0x02E0;
+
+    // ==================== FUNCTIONS ====================
+
+    // --- Mouse hook ---
     [DllImport("user32.dll", SetLastError = true)]
     public static extern IntPtr SetWindowsHookEx(int idHook, LowLevelMouseProc lpfn, IntPtr hMod, uint dwThreadId);
 
@@ -52,9 +116,7 @@ internal static class NativeMethods
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern IntPtr GetModuleHandle(string? lpModuleName);
 
-    // --- Window Enumeration ---
-    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-
+    // --- Window enumeration & properties ---
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
@@ -75,6 +137,10 @@ internal static class NativeMethods
     public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
     [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
     public static extern IntPtr GetShellWindow();
 
     [DllImport("user32.dll")]
@@ -92,38 +158,16 @@ internal static class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
+
     [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    public static extern int GetWindowTextLength(IntPtr hWnd);
 
-    [DllImport("dwmapi.dll")]
-    public static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out int pvAttribute, int cbAttribute);
-
-    // GetWindowLong indices
-    public const int GWL_STYLE = -16;
-    public const int GWL_EXSTYLE = -20;
-
-    // Window styles
-    public const uint WS_MAXIMIZE = 0x01000000;
-    public const uint WS_MINIMIZE = 0x20000000;
-    public const uint WS_VISIBLE = 0x10000000;
-    public const uint WS_EX_TOOLWINDOW = 0x00000080;
-    public const uint WS_EX_APPWINDOW = 0x00040000;
-    public const uint WS_EX_NOACTIVATE = 0x08000000;
-
-    // SetWindowPos flags
-    public const uint SWP_NOSIZE = 0x0001;
-    public const uint SWP_NOZORDER = 0x0004;
-    public const uint SWP_NOACTIVATE = 0x0010;
-    public const uint SWP_ASYNCWINDOWPOS = 0x4000;
-
-    // GetAncestor flags
-    public const uint GA_ROOT = 2;
-
-    // DWM attributes
-    public const int DWMWA_CLOAKED = 14;
-
-    // --- Deferred Window Positioning (batch moves) ---
+    // --- Deferred window positioning ---
     [DllImport("user32.dll", SetLastError = true)]
     public static extern IntPtr BeginDeferWindowPos(int nNumWindows);
 
@@ -145,16 +189,11 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern int GetAwarenessFromDpiAwarenessContext(IntPtr value);
 
-    // DPI_AWARENESS values
-    public const int DPI_AWARENESS_UNAWARE = 0;
-    public const int DPI_AWARENESS_SYSTEM_AWARE = 1;
-    public const int DPI_AWARENESS_PER_MONITOR_AWARE = 2;
+    // --- DWM ---
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out int pvAttribute, int cbAttribute);
 
-    // --- WinEvent hook (window state changes) ---
-    public delegate void WinEventDelegate(
-        IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
-        int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
-
+    // --- WinEvent hooks ---
     [DllImport("user32.dll")]
     public static extern IntPtr SetWinEventHook(
         uint eventMin, uint eventMax, IntPtr hmodWinEventProc,
@@ -164,40 +203,25 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool UnhookWinEvent(IntPtr hWinEventHook);
 
-    public const uint EVENT_SYSTEM_MINIMIZEEND = 0x0017; // window restored
-    public const uint EVENT_OBJECT_SHOW = 0x8002;        // window shown
-    public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
-    public const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
-
     // --- Repaint ---
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool RedrawWindow(IntPtr hWnd, IntPtr lprcUpdate, IntPtr hrgnUpdate, uint flags);
 
-    public const uint RDW_INVALIDATE = 0x0001;
-    public const uint RDW_UPDATENOW = 0x0100;
-    public const uint RDW_ALLCHILDREN = 0x0080;
-
     // --- Keyboard state ---
     [DllImport("user32.dll")]
     public static extern short GetKeyState(int nVirtKey);
 
-    public const int VK_CONTROL = 0x11;
-    public const int VK_MENU = 0x12; // Alt key
+    // --- Global hotkeys ---
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
 
-    // Mouse wheel
-    public const int WM_MOUSEWHEEL = 0x020A;
-
-    // SetWindowPos flags (additional)
-    public const uint SWP_NOMOVE = 0x0002;
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
     // --- SendMessage ---
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     public static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
-
-    public const uint WM_DPICHANGED = 0x02E0;
-
-    // Taskbar class name check
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    public static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
 }
