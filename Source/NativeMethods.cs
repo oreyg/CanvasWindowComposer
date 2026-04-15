@@ -139,6 +139,17 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern uint GetDpiForWindow(IntPtr hwnd);
 
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetWindowDpiAwarenessContext(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    public static extern int GetAwarenessFromDpiAwarenessContext(IntPtr value);
+
+    // DPI_AWARENESS values
+    public const int DPI_AWARENESS_UNAWARE = 0;
+    public const int DPI_AWARENESS_SYSTEM_AWARE = 1;
+    public const int DPI_AWARENESS_PER_MONITOR_AWARE = 2;
+
     // --- WinEvent hook (window state changes) ---
     public delegate void WinEventDelegate(
         IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
@@ -157,6 +168,15 @@ internal static class NativeMethods
     public const uint EVENT_OBJECT_SHOW = 0x8002;        // window shown
     public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
     public const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
+
+    // --- Repaint ---
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool RedrawWindow(IntPtr hWnd, IntPtr lprcUpdate, IntPtr hrgnUpdate, uint flags);
+
+    public const uint RDW_INVALIDATE = 0x0001;
+    public const uint RDW_UPDATENOW = 0x0100;
+    public const uint RDW_ALLCHILDREN = 0x0080;
 
     // --- Keyboard state ---
     [DllImport("user32.dll")]

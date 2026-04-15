@@ -13,8 +13,11 @@ internal sealed class TrayApp : ApplicationContext
     private readonly Timer _moveTimer;
     private readonly ZoomSharedMemory _sharedMem;
     private readonly DllInjector _injector;
+    private readonly Canvas _canvas;
+    private readonly WindowManager _wm;
+    private readonly MinimapOverlay _minimap;
     private bool _enabled = true;
-    private int _refreshCounter;
+    private int _reconcileCounter;
     private IntPtr _winEventHook;
     private readonly NativeMethods.WinEventDelegate _winEventProc;
 
@@ -22,24 +25,21 @@ internal sealed class TrayApp : ApplicationContext
     {
         _sharedMem = new ZoomSharedMemory();
         _injector = new DllInjector();
-        WindowMover.SetDpiHookResources(_injector, _sharedMem);
-
-        _inertia = new InertiaEngine();
+        _canvas = new Canvas();
+        _wm = new WindowManager(_canvas, _injector, _sharedMem);
+        _minimap = new MinimapOverlay(_canvas);
+        _inertia = new InertiaEngine(_canvas, _wm);
+        _inertia.SetMinimap(_minimap);
         _mouseHook = new MouseHook();
-        _mouseHook.DragStarted += () =>
-        {
-            _inertia.Cancel();
-            WindowMover.BeginMove();
-        };
 
-        // Timer runs at ~60fps and drains accumulated deltas from the hook.
-        // This keeps heavy work (EnumWindows + DeferWindowPos) OFF the hook callback.
+        _mouseHook.DragStarted += () => _inertia.Cancel();
+
         _moveTimer = new Timer { Interval = 16 };
         _moveTimer.Tick += OnMoveTick;
         _moveTimer.Start();
 
         var toggleItem = new ToolStripMenuItem("Enabled", null, OnToggle) { Checked = true };
-        var resetZoomItem = new ToolStripMenuItem("Reset Zoom", null, (_, _) => WindowMover.ResetZoom());
+        var resetZoomItem = new ToolStripMenuItem("Reset Zoom", null, (_, _) => _wm.Reset());
         var exitItem = new ToolStripMenuItem("Exit", null, OnExit);
 
         var menu = new ContextMenuStrip();
@@ -60,7 +60,6 @@ internal sealed class TrayApp : ApplicationContext
 
         _mouseHook.Install();
 
-        // Listen for window restore events so zoom adjusts immediately
         _winEventProc = OnWinEvent;
         _winEventHook = NativeMethods.SetWinEventHook(
             NativeMethods.EVENT_SYSTEM_MINIMIZEEND,
@@ -74,39 +73,42 @@ internal sealed class TrayApp : ApplicationContext
     private void OnWinEvent(IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
         int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
     {
-        if (eventType == NativeMethods.EVENT_SYSTEM_MINIMIZEEND && WindowMover.IsZoomActive)
-            WindowMover.ZoomWindow(hwnd);
+        if (eventType == NativeMethods.EVENT_SYSTEM_MINIMIZEEND && _canvas.IsTransformed)
+            _wm.ReprojectWindow(hwnd);
     }
 
     private void OnMoveTick(object? sender, EventArgs e)
     {
-        // Drain accumulated drag delta
+        bool moved = false;
+
         if (_mouseHook.TryDrainDelta(out int dx, out int dy))
         {
-            WindowMover.ApplyDelta(dx, dy);
+            _canvas.Pan(dx, dy);
             _inertia.RecordDelta(dx, dy);
+            moved = true;
         }
 
         if (_mouseHook.TryDrainDragEnded())
-        {
-            WindowMover.EndMove();
             _inertia.Release();
-        }
 
-        // Drain zoom scroll
         if (_mouseHook.TryDrainZoom(out int scrollDelta, out int cx, out int cy))
         {
-            WindowMover.ApplyZoom(scrollDelta, cx, cy);
-            _refreshCounter = 0;
+            _wm.Reconcile();
+            _canvas.ZoomAt(scrollDelta, cx, cy);
+            moved = true;
         }
 
-        // Periodically scan for new windows only (~500ms)
-        // Restored windows are handled instantly via WinEvent hook.
-        // Existing windows are never touched — respects manual moves.
-        if (WindowMover.IsZoomActive && ++_refreshCounter >= 30)
+        if (moved)
         {
-            _refreshCounter = 0;
-            WindowMover.ScanNewWindows();
+            _wm.Reproject();
+            _minimap.NotifyCanvasChanged();
+        }
+
+        if (_canvas.IsTransformed && ++_reconcileCounter >= 30)
+        {
+            _reconcileCounter = 0;
+            _wm.Reconcile();
+            _wm.RemoveStale();
         }
     }
 
@@ -133,7 +135,9 @@ internal sealed class TrayApp : ApplicationContext
         if (_winEventHook != IntPtr.Zero)
             NativeMethods.UnhookWinEvent(_winEventHook);
         _inertia.Cancel();
-        WindowMover.ResetZoom(); // eject hooks + restore windows before exit
+        _minimap.Close();
+        _minimap.Dispose();
+        _wm.Reset();
         _mouseHook.Dispose();
         _inertia.Dispose();
         _sharedMem.Dispose();
@@ -173,6 +177,6 @@ internal sealed class TrayApp : ApplicationContext
     internal static void Log(string msg)
     {
         try { File.AppendAllText(LogPath, $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n"); }
-        catch { /* don't crash on log failure */ }
+        catch { }
     }
 }
