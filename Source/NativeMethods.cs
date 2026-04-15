@@ -183,6 +183,7 @@ internal static class NativeMethods
     public static extern short GetKeyState(int nVirtKey);
 
     public const int VK_CONTROL = 0x11;
+    public const int VK_MENU = 0x12; // Alt key
 
     // Mouse wheel
     public const int WM_MOUSEWHEEL = 0x020A;

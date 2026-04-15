@@ -1,6 +1,8 @@
 # Canvas Window Composer
 
-A Windows system tray utility that turns your desktop into an infinite, pannable, zoomable canvas. Middle-click drag to pan all windows, Ctrl+scroll to zoom.
+> **Note:** This project is in very early development. Expect rough edges, bugs, and breaking changes.
+
+Turns your Windows desktop into an infinite, pannable, zoomable canvas. Middle-click drag to pan all windows, Alt+scroll to zoom.
 
 ## Features
 

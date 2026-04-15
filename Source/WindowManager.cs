@@ -29,17 +29,17 @@ internal sealed class WindowManager
     /// <summary>
     /// Project all canvas windows to screen. Call after Pan/ZoomAt.
     /// </summary>
-    public void Reproject()
+    public void Reproject(bool updateDpi = false)
     {
         DiscoverNewWindows();
 
         bool isZoomed = Math.Abs(_canvas.Zoom - 1.0) > 0.001;
 
-        if (isZoomed)
+        if (updateDpi && isZoomed)
             _sharedMem.Write(_canvas.Zoom);
 
         var batch = new List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)>();
-        var dpiWindows = isZoomed ? new List<IntPtr>() : null;
+        var dpiWindows = (updateDpi && isZoomed) ? new List<IntPtr>() : null;
 
         foreach (var (hWnd, world) in _canvas.Windows)
         {
@@ -52,21 +52,45 @@ internal sealed class WindowManager
             batch.Add((hWnd, sx, sy, sw, sh, false));
             _lastScreen[hWnd] = (sx, sy, sw, sh);
 
-            if (isZoomed)
+            if (dpiWindows != null)
             {
                 InjectDpiHook(hWnd);
                 if (IsDpiAdaptive(hWnd))
-                    dpiWindows!.Add(hWnd);
+                    dpiWindows.Add(hWnd);
             }
         }
 
-        BatchSetPositions(batch);
-
+        // Send DPI changed before positioning so windows re-render
+        // at the correct size before being moved
         if (dpiWindows is { Count: > 0 })
         {
             uint virtualDpi = (uint)(_baseDpi * _canvas.Zoom + 0.5);
             SendDpiChanged(dpiWindows, virtualDpi);
-            ForceRepaint(dpiWindows);
+        }
+
+        BatchSetPositions(batch);
+    }
+
+    /// <summary>
+    /// Re-send WM_DPICHANGED to all DPI-adaptive windows at current zoom.
+    /// Call once at the start of panning while zoomed, so windows re-render
+    /// for their current size before being moved.
+    /// </summary>
+    public void RefreshDpi()
+    {
+        if (Math.Abs(_canvas.Zoom - 1.0) <= 0.001) return;
+
+        var dpiWindows = new List<IntPtr>();
+        foreach (var (hWnd, _) in _canvas.Windows)
+        {
+            if (IsWindowActive(hWnd) && IsDpiAdaptive(hWnd))
+                dpiWindows.Add(hWnd);
+        }
+
+        if (dpiWindows.Count > 0)
+        {
+            uint virtualDpi = (uint)(_baseDpi * _canvas.Zoom + 0.5);
+            SendDpiChanged(dpiWindows, virtualDpi);
         }
     }
 

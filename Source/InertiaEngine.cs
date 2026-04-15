@@ -10,6 +10,7 @@ internal sealed class InertiaEngine : IDisposable
     private const double Friction = 0.92;
     private const double StopThreshold = 0.5;
     private const int TickIntervalMs = 16;
+    private const long VelocityWindowMs = 100; // only average samples from the last N ms for release velocity
 
     private readonly List<(double dx, double dy, long ticks)> _samples = new();
     private double _vx, _vy;
@@ -31,8 +32,8 @@ internal sealed class InertiaEngine : IDisposable
     public void RecordDelta(int dx, int dy)
     {
         _samples.Add((dx, dy, Environment.TickCount64));
-        while (_samples.Count > SampleWindow)
-            _samples.RemoveAt(0);
+        if (_samples.Count > SampleWindow)
+            _samples.RemoveRange(0, _samples.Count - SampleWindow);
     }
 
     public void Release()
@@ -50,7 +51,7 @@ internal sealed class InertiaEngine : IDisposable
         for (int i = _samples.Count - 1; i >= 0; i--)
         {
             var s = _samples[i];
-            if (now - s.ticks > 100) break;
+            if (now - s.ticks > VelocityWindowMs) break;
             sumDx += s.dx;
             sumDy += s.dy;
             count++;
@@ -91,6 +92,7 @@ internal sealed class InertiaEngine : IDisposable
 
         if (dx != 0 || dy != 0)
         {
+            _wm.Reconcile();
             _canvas.Pan(dx, dy);
             _wm.Reproject();
             _minimap?.NotifyCanvasChanged();
