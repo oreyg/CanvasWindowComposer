@@ -26,3 +26,5 @@ bld/
 
 ## Debug logs
 canvas_debug.log
+.claude/
+native/build/

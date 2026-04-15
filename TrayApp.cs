@@ -11,10 +11,19 @@ internal sealed class TrayApp : ApplicationContext
     private readonly MouseHook _mouseHook;
     private readonly InertiaEngine _inertia;
     private readonly Timer _moveTimer;
+    private readonly ZoomSharedMemory _sharedMem;
+    private readonly DllInjector _injector;
     private bool _enabled = true;
+    private int _refreshCounter;
+    private IntPtr _winEventHook;
+    private readonly NativeMethods.WinEventDelegate _winEventProc;
 
     public TrayApp()
     {
+        _sharedMem = new ZoomSharedMemory();
+        _injector = new DllInjector();
+        WindowMover.SetDpiHookResources(_injector, _sharedMem);
+
         _inertia = new InertiaEngine();
         _mouseHook = new MouseHook();
         _mouseHook.DragStarted += () =>
@@ -50,6 +59,23 @@ internal sealed class TrayApp : ApplicationContext
         };
 
         _mouseHook.Install();
+
+        // Listen for window restore events so zoom adjusts immediately
+        _winEventProc = OnWinEvent;
+        _winEventHook = NativeMethods.SetWinEventHook(
+            NativeMethods.EVENT_SYSTEM_MINIMIZEEND,
+            NativeMethods.EVENT_SYSTEM_MINIMIZEEND,
+            IntPtr.Zero,
+            _winEventProc,
+            0, 0,
+            NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
+    }
+
+    private void OnWinEvent(IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
+        int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
+    {
+        if (eventType == NativeMethods.EVENT_SYSTEM_MINIMIZEEND && WindowMover.IsZoomActive)
+            WindowMover.ZoomWindow(hwnd);
     }
 
     private void OnMoveTick(object? sender, EventArgs e)
@@ -71,6 +97,16 @@ internal sealed class TrayApp : ApplicationContext
         if (_mouseHook.TryDrainZoom(out int scrollDelta, out int cx, out int cy))
         {
             WindowMover.ApplyZoom(scrollDelta, cx, cy);
+            _refreshCounter = 0;
+        }
+
+        // Periodically scan for new windows only (~500ms)
+        // Restored windows are handled instantly via WinEvent hook.
+        // Existing windows are never touched — respects manual moves.
+        if (WindowMover.IsZoomActive && ++_refreshCounter >= 30)
+        {
+            _refreshCounter = 0;
+            WindowMover.ScanNewWindows();
         }
     }
 
@@ -94,9 +130,13 @@ internal sealed class TrayApp : ApplicationContext
     {
         _moveTimer.Stop();
         _moveTimer.Dispose();
+        if (_winEventHook != IntPtr.Zero)
+            NativeMethods.UnhookWinEvent(_winEventHook);
         _inertia.Cancel();
+        WindowMover.ResetZoom(); // eject hooks + restore windows before exit
         _mouseHook.Dispose();
         _inertia.Dispose();
+        _sharedMem.Dispose();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
         Application.Exit();
