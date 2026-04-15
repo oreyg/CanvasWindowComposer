@@ -20,7 +20,11 @@ internal sealed class TrayApp : ApplicationContext
     private readonly HotkeyWindow _hotkeyWindow;
     private bool _enabled = true;
     private int _reconcileCounter;
-    private IntPtr _winEventHook_System_MinimizeEnd;
+    private const long ForegroundSuppressionMs = 100; // ignore focus events shortly after minimize/close
+    private long _lastWindowLostTick;
+    private IntPtr _winEventHook_System_Minimize;
+    private IntPtr _winEventHook_Object_Destroy;
+    private IntPtr _winEventHook_System_Foreground;
     private IntPtr _winEventHook_Object_LocationChange;
     private readonly NativeMethods.WinEventDelegate _winEventProc;
 
@@ -69,9 +73,23 @@ internal sealed class TrayApp : ApplicationContext
         _mouseHook.Install();
 
         _winEventProc = OnWinEvent;
-        _winEventHook_System_MinimizeEnd = NativeMethods.SetWinEventHook(
+        _winEventHook_System_Minimize = NativeMethods.SetWinEventHook(
+            NativeMethods.EVENT_SYSTEM_MINIMIZESTART,
             NativeMethods.EVENT_SYSTEM_MINIMIZEEND,
-            NativeMethods.EVENT_SYSTEM_MINIMIZEEND,
+            IntPtr.Zero,
+            _winEventProc,
+            0, 0,
+            NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
+        _winEventHook_System_Foreground = NativeMethods.SetWinEventHook(
+            NativeMethods.EVENT_SYSTEM_FOREGROUND,
+            NativeMethods.EVENT_SYSTEM_FOREGROUND,
+            IntPtr.Zero,
+            _winEventProc,
+            0, 0,
+            NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
+        _winEventHook_Object_Destroy = NativeMethods.SetWinEventHook(
+            NativeMethods.EVENT_OBJECT_DESTROY,
+            NativeMethods.EVENT_OBJECT_DESTROY,
             IntPtr.Zero,
             _winEventProc,
             0, 0,
@@ -92,8 +110,33 @@ internal sealed class TrayApp : ApplicationContext
 
         switch (eventType)
         {
+            case NativeMethods.EVENT_SYSTEM_MINIMIZESTART:
+            case NativeMethods.EVENT_OBJECT_DESTROY:
+                _lastWindowLostTick = Environment.TickCount64;
+                break;
+
             case NativeMethods.EVENT_SYSTEM_MINIMIZEEND:
                 _wm.ReprojectWindow(hwnd);
+                break;
+
+            case NativeMethods.EVENT_SYSTEM_FOREGROUND:
+                // Window got focus — if it's off-screen, center camera on it.
+                // Skip if a window was just minimized — the OS is auto-focusing
+                // the next window in Z-order, not the user switching.
+                if (Environment.TickCount64 - _lastWindowLostTick < ForegroundSuppressionMs)
+                    break;
+
+                if (_canvas.HasWindow(hwnd))
+                {
+                    var screen = Screen.PrimaryScreen!.WorkingArea;
+                    if (!_canvas.IsWindowOnScreen(hwnd, screen.Width, screen.Height))
+                    {
+                        var world = _canvas.Windows[hwnd];
+                        _canvas.CenterOn(world.X, world.Y, world.W, world.H, screen.Width, screen.Height);
+                        _wm.Reproject(updateDpi: true);
+                        _minimap.NotifyCanvasChanged();
+                    }
+                }
                 break;
 
             case NativeMethods.EVENT_OBJECT_LOCATIONCHANGE:
@@ -162,8 +205,12 @@ internal sealed class TrayApp : ApplicationContext
     {
         _moveTimer.Stop();
         _moveTimer.Dispose();
-        if (_winEventHook_System_MinimizeEnd != IntPtr.Zero)
-            NativeMethods.UnhookWinEvent(_winEventHook_System_MinimizeEnd);
+        if (_winEventHook_System_Minimize != IntPtr.Zero)
+            NativeMethods.UnhookWinEvent(_winEventHook_System_Minimize);
+        if (_winEventHook_System_Foreground != IntPtr.Zero)
+            NativeMethods.UnhookWinEvent(_winEventHook_System_Foreground);
+        if (_winEventHook_Object_Destroy != IntPtr.Zero)
+            NativeMethods.UnhookWinEvent(_winEventHook_Object_Destroy);
         if (_winEventHook_Object_LocationChange != IntPtr.Zero)
             NativeMethods.UnhookWinEvent(_winEventHook_Object_LocationChange);
         _inertia.Cancel();

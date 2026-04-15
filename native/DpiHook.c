@@ -10,14 +10,23 @@
 // ("CanvasDesktopZoom") written by the host C# app.
 // ============================================================
 
+static HMODULE g_hSelf = NULL;
+
 // --- Shared memory ---
+// Layout: [DWORD hostPid (4 bytes)] [double scale (8 bytes)]
 static HANDLE  g_hMapFile = NULL;
-static double* g_pScale   = NULL;
+static void*   g_pView    = NULL;
 
 static double GetScale(void)
 {
-    if (g_pScale) return *g_pScale;
+    if (g_pView) return *(double*)((char*)g_pView + sizeof(DWORD));
     return 1.0;
+}
+
+static DWORD GetHostPid(void)
+{
+    if (g_pView) return *(DWORD*)g_pView;
+    return 0;
 }
 
 // --- Original function pointers (set by MinHook) ---
@@ -62,7 +71,6 @@ static HRESULT WINAPI HookedGetDpiForMonitor(
 
 static int WINAPI HookedGetSystemMetricsForDpi(int nIndex, UINT dpi)
 {
-    // Scale the DPI parameter so the metrics returned are for our virtual DPI
     double scale = GetScale();
     UINT scaledDpi = (UINT)(dpi * scale + 0.5);
     return fpGetSystemMetricsForDpi(nIndex, scaledDpi);
@@ -78,7 +86,6 @@ static BOOL InstallHooks(void)
     HMODULE hUser32 = GetModuleHandleW(L"user32.dll");
     HMODULE hShcore = LoadLibraryW(L"shcore.dll");
 
-    // GetDpiForWindow
     if (hUser32)
     {
         FARPROC proc = GetProcAddress(hUser32, "GetDpiForWindow");
@@ -86,7 +93,6 @@ static BOOL InstallHooks(void)
             MH_CreateHook(proc, HookedGetDpiForWindow, (LPVOID*)&fpGetDpiForWindow);
     }
 
-    // GetDpiForSystem
     if (hUser32)
     {
         FARPROC proc = GetProcAddress(hUser32, "GetDpiForSystem");
@@ -94,7 +100,6 @@ static BOOL InstallHooks(void)
             MH_CreateHook(proc, HookedGetDpiForSystem, (LPVOID*)&fpGetDpiForSystem);
     }
 
-    // GetSystemMetricsForDpi
     if (hUser32)
     {
         FARPROC proc = GetProcAddress(hUser32, "GetSystemMetricsForDpi");
@@ -102,7 +107,6 @@ static BOOL InstallHooks(void)
             MH_CreateHook(proc, HookedGetSystemMetricsForDpi, (LPVOID*)&fpGetSystemMetricsForDpi);
     }
 
-    // GetDpiForMonitor
     if (hShcore)
     {
         FARPROC proc = GetProcAddress(hShcore, "GetDpiForMonitor");
@@ -126,8 +130,8 @@ static BOOL OpenSharedMemory(void)
     if (!g_hMapFile)
         return FALSE;
 
-    g_pScale = (double*)MapViewOfFile(g_hMapFile, FILE_MAP_READ, 0, 0, sizeof(double));
-    if (!g_pScale)
+    g_pView = MapViewOfFile(g_hMapFile, FILE_MAP_READ, 0, 0, sizeof(DWORD) + sizeof(double));
+    if (!g_pView)
     {
         CloseHandle(g_hMapFile);
         g_hMapFile = NULL;
@@ -138,10 +142,10 @@ static BOOL OpenSharedMemory(void)
 
 static void CloseSharedMemory(void)
 {
-    if (g_pScale)
+    if (g_pView)
     {
-        UnmapViewOfFile(g_pScale);
-        g_pScale = NULL;
+        UnmapViewOfFile(g_pView);
+        g_pView = NULL;
     }
     if (g_hMapFile)
     {
@@ -150,20 +154,93 @@ static void CloseSharedMemory(void)
     }
 }
 
+// --- DPI reset notification ---
+// After unhooking, send WM_DPICHANGED to all top-level windows of this
+// process so they re-render at the real DPI.
+
+static BOOL CALLBACK EnumWindowsDpiReset(HWND hwnd, LPARAM lParam)
+{
+    DWORD pid;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid != (DWORD)lParam)
+        return TRUE;
+    if (!IsWindowVisible(hwnd))
+        return TRUE;
+
+    UINT dpi = GetDpiForWindow(hwnd);
+    WPARAM wp = MAKEWPARAM(dpi, dpi);
+    RECT rc;
+    GetWindowRect(hwnd, &rc);
+    SendMessage(hwnd, 0x02E0 /* WM_DPICHANGED */, wp, (LPARAM)&rc);
+    return TRUE;
+}
+
+static void NotifyDpiReset(void)
+{
+    EnumWindows(EnumWindowsDpiReset, (LPARAM)GetCurrentProcessId());
+}
+
+// --- Host lifetime monitor ---
+// Opens a handle to the host process (PID from shared memory) and waits
+// on it. When a process terminates, its handle becomes signaled.
+// CreateThread is safe from DllMain; thread pool APIs are NOT.
+
+static DWORD WINAPI MonitorThread(LPVOID lpParam)
+{
+    (void)lpParam;
+
+    DWORD hostPid = GetHostPid();
+    if (!hostPid)
+    {
+        RemoveHooks();
+        CloseSharedMemory();
+        NotifyDpiReset();
+        FreeLibraryAndExitThread(g_hSelf, 0);
+        return 0;
+    }
+
+    HANDLE hProcess = OpenProcess(SYNCHRONIZE, FALSE, hostPid);
+    if (!hProcess)
+    {
+        // Can't open host — assume it's already gone
+        RemoveHooks();
+        CloseSharedMemory();
+        NotifyDpiReset();
+        FreeLibraryAndExitThread(g_hSelf, 0);
+        return 0;
+    }
+
+    // Blocks until the host process terminates
+    WaitForSingleObject(hProcess, INFINITE);
+    CloseHandle(hProcess);
+
+    RemoveHooks();
+    CloseSharedMemory();
+    NotifyDpiReset();
+    FreeLibraryAndExitThread(g_hSelf, 0);
+    return 0;
+}
+
+static void StartMonitor(void)
+{
+    CreateThread(NULL, 0, MonitorThread, NULL, 0, NULL);
+}
+
 // --- DLL entry point ---
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved)
 {
-    (void)hModule;
     (void)reserved;
 
     switch (reason)
     {
     case DLL_PROCESS_ATTACH:
+        g_hSelf = hModule;
         DisableThreadLibraryCalls(hModule);
         if (!OpenSharedMemory())
-            return FALSE; // fail injection if shared memory isn't ready
+            return FALSE;
         InstallHooks();
+        StartMonitor();
         break;
 
     case DLL_PROCESS_DETACH:

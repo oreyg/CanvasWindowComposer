@@ -19,8 +19,8 @@ internal sealed class WindowManager
     // Track last projected screen positions to detect manual moves
     private readonly Dictionary<IntPtr, (int x, int y, int w, int h)> _lastScreen = new();
 
-    // Windows we auto-hidden (so we don't restore user-minimized ones)
-    private readonly HashSet<IntPtr> _autoHidden = new();
+    // Windows with clipped (empty) region to prevent them from fighting off-screen
+    private readonly HashSet<IntPtr> _clippedWindows = new();
 
     public WindowManager(Canvas canvas, DllInjector injector, ZoomSharedMemory sharedMem)
     {
@@ -39,31 +39,9 @@ internal sealed class WindowManager
         bool isZoomed = Math.Abs(_canvas.Zoom - 1.0) > 0.001;
 
         if (updateDpi && isZoomed)
-            _sharedMem.Write(_canvas.Zoom);
+            _sharedMem.WriteScale(_canvas.Zoom);
 
-        // Pass 1: auto-hide/show off-screen windows
-        foreach (var (hWnd, world) in _canvas.Windows)
-        {
-            var (sx, sy) = _canvas.WorldToScreen(world.X, world.Y);
-            var (sw, sh) = _canvas.WorldToScreenSize(world.W, world.H);
-            bool onScreen = IsOnAnyScreen(sx, sy, sw, sh);
-
-            if (!onScreen && !_autoHidden.Contains(hWnd) && NativeMethods.IsWindowVisible(hWnd))
-            {
-                if (CanHideShow(hWnd))
-                {
-                    NativeMethods.ShowWindow(hWnd, NativeMethods.SW_HIDE);
-                    _autoHidden.Add(hWnd);
-                }
-            }
-            else if (onScreen && _autoHidden.Contains(hWnd))
-            {
-                NativeMethods.ShowWindow(hWnd, NativeMethods.SW_SHOW);
-                _autoHidden.Remove(hWnd);
-            }
-        }
-
-        // Pass 2: build batch for all visible windows
+        // Build batch for all visible windows
         var batch = new List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)>();
         var dpiWindows = (updateDpi && isZoomed) ? new List<IntPtr>() : null;
 
@@ -72,8 +50,28 @@ internal sealed class WindowManager
             if (!IsWindowActive(hWnd))
                 continue;
 
+            // Skip maximized/fullscreen windows — they shouldn't move
+            int style = NativeMethods.GetWindowLong(hWnd, NativeMethods.GWL_STYLE);
+            if ((style & (int)NativeMethods.WS_MAXIMIZE) != 0)
+                continue;
+
             var (sx, sy) = _canvas.WorldToScreen(world.X, world.Y);
             var (sw, sh) = _canvas.WorldToScreenSize(world.W, world.H);
+            bool onScreen = IsOnAnyScreen(sx, sy, sw, sh);
+
+            // Clip off-screen windows to an empty region so they render
+            // nothing but stay positioned — prevents apps from fighting back.
+            if (!onScreen && !_clippedWindows.Contains(hWnd))
+            {
+                IntPtr emptyRgn = NativeMethods.CreateRectRgn(0, 0, 0, 0);
+                NativeMethods.SetWindowRgn(hWnd, emptyRgn, true);
+                _clippedWindows.Add(hWnd);
+            }
+            else if (onScreen && _clippedWindows.Contains(hWnd))
+            {
+                NativeMethods.SetWindowRgn(hWnd, IntPtr.Zero, true);
+                _clippedWindows.Remove(hWnd);
+            }
 
             batch.Add((hWnd, sx, sy, sw, sh, false));
             _lastScreen[hWnd] = (sx, sy, sw, sh);
@@ -171,12 +169,17 @@ internal sealed class WindowManager
         int ax = rect.Left, ay = rect.Top;
         int aw = rect.Right - rect.Left, ah = rect.Bottom - rect.Top;
 
-        if (Math.Abs(ax - last.x) > 2 || Math.Abs(ay - last.y) > 2 ||
-            Math.Abs(aw - last.w) > 2 || Math.Abs(ah - last.h) > 2)
-        {
-            _canvas.SetWindowFromScreen(hWnd, ax, ay, aw, ah);
-            _lastScreen[hWnd] = (ax, ay, aw, ah);
-        }
+        if (Math.Abs(ax - last.x) <= 2 && Math.Abs(ay - last.y) <= 2 &&
+            Math.Abs(aw - last.w) <= 2 && Math.Abs(ah - last.h) <= 2)
+            return;
+
+        // Don't reconcile clipped windows — they're hidden and we don't
+        // care where the app thinks they are
+        if (_clippedWindows.Contains(hWnd))
+            return;
+
+        _canvas.SetWindowFromScreen(hWnd, ax, ay, aw, ah);
+        _lastScreen[hWnd] = (ax, ay, aw, ah);
     }
 
     /// <summary>Remove windows from canvas that no longer exist.</summary>
@@ -185,9 +188,6 @@ internal sealed class WindowManager
         var stale = new List<IntPtr>();
         foreach (var hWnd in _canvas.Windows.Keys)
         {
-            // Don't remove windows we auto-hidden
-            if (_autoHidden.Contains(hWnd))
-                continue;
             if (!NativeMethods.IsWindowVisible(hWnd))
                 stale.Add(hWnd);
         }
@@ -222,13 +222,13 @@ internal sealed class WindowManager
     /// <summary>Reset: restore all windows to world positions, eject hooks, clear canvas.</summary>
     public void Reset()
     {
-        // Show all auto-hidden windows first
-        foreach (var hWnd in _autoHidden)
-            NativeMethods.ShowWindow(hWnd, NativeMethods.SW_SHOW);
-        _autoHidden.Clear();
+        // Restore clipped windows
+        foreach (var hWnd in _clippedWindows)
+            NativeMethods.SetWindowRgn(hWnd, IntPtr.Zero, true);
+        _clippedWindows.Clear();
 
         _canvas.ResetCamera();
-        _sharedMem.Write(1.0);
+        _sharedMem.WriteScale(1.0);
 
         var batch = new List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)>();
         var dpiWindows = new List<IntPtr>();
@@ -294,34 +294,6 @@ internal sealed class WindowManager
                 return true;
         }
         return false;
-    }
-
-    // Programs where SW_HIDE/SW_SHOW is nesessary
-    private static readonly HashSet<string> HideShowAllowlist = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "devenv",  // Visual Studio
-    };
-
-    private readonly Dictionary<uint, bool> _hideShowCache = new();
-
-    /// <summary>Check if this window's process supports SW_HIDE/SW_SHOW</summary>
-    private bool CanHideShow(IntPtr hWnd)
-    {
-        NativeMethods.GetWindowThreadProcessId(hWnd, out uint pid);
-
-        if (_hideShowCache.TryGetValue(pid, out bool cached))
-            return cached;
-
-        bool allowed = false;
-        try
-        {
-            using var proc = System.Diagnostics.Process.GetProcessById((int)pid);
-            allowed = HideShowAllowlist.Contains(proc.ProcessName);
-        }
-        catch { }
-
-        _hideShowCache[pid] = allowed;
-        return allowed;
     }
 
     private static void ForceRepaint(List<IntPtr> windows)
