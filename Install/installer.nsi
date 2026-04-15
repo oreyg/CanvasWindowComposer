@@ -8,6 +8,8 @@ RequestExecutionLevel admin
 
 ; --- UI ---
 !define MUI_ABORTWARNING
+!define MUI_FINISHPAGE_RUN "$INSTDIR\CanvasDesktop.exe"
+!define MUI_FINISHPAGE_RUN_TEXT "Run Canvas Window Composer"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
