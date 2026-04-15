@@ -1,7 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shellscalingapi.h>
-#include "include/MinHook.h"
+#include "MinHook.h"
 
 // ============================================================
 // DpiHook.dll — Injected into target processes by CanvasDesktop.
