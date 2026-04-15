@@ -154,19 +154,24 @@ static void CloseSharedMemory(void)
     }
 }
 
-// --- DPI reset notification ---
-// After unhooking, send WM_DPICHANGED to all top-level windows of this
-// process so they re-render at the real DPI.
+// --- Window reset ---
+// After unhooking, restore window regions (clipped windows) and send
+// WM_DPICHANGED to all top-level windows of this process.
 
-static BOOL CALLBACK EnumWindowsDpiReset(HWND hwnd, LPARAM lParam)
+static BOOL CALLBACK EnumWindowsReset(HWND hwnd, LPARAM lParam)
 {
     DWORD pid;
     GetWindowThreadProcessId(hwnd, &pid);
     if (pid != (DWORD)lParam)
         return TRUE;
+
+    // Restore clipped window regions (SetWindowRgn(NULL) removes any custom region)
+    SetWindowRgn(hwnd, NULL, TRUE);
+
     if (!IsWindowVisible(hwnd))
         return TRUE;
 
+    // Send WM_DPICHANGED so the window re-renders at real DPI
     UINT dpi = GetDpiForWindow(hwnd);
     WPARAM wp = MAKEWPARAM(dpi, dpi);
     RECT rc;
@@ -175,9 +180,9 @@ static BOOL CALLBACK EnumWindowsDpiReset(HWND hwnd, LPARAM lParam)
     return TRUE;
 }
 
-static void NotifyDpiReset(void)
+static void ResetWindows(void)
 {
-    EnumWindows(EnumWindowsDpiReset, (LPARAM)GetCurrentProcessId());
+    EnumWindows(EnumWindowsReset, (LPARAM)GetCurrentProcessId());
 }
 
 // --- Host lifetime monitor ---
@@ -194,7 +199,7 @@ static DWORD WINAPI MonitorThread(LPVOID lpParam)
     {
         RemoveHooks();
         CloseSharedMemory();
-        NotifyDpiReset();
+        ResetWindows();
         FreeLibraryAndExitThread(g_hSelf, 0);
         return 0;
     }
@@ -205,7 +210,7 @@ static DWORD WINAPI MonitorThread(LPVOID lpParam)
         // Can't open host — assume it's already gone
         RemoveHooks();
         CloseSharedMemory();
-        NotifyDpiReset();
+        ResetWindows();
         FreeLibraryAndExitThread(g_hSelf, 0);
         return 0;
     }
@@ -216,7 +221,7 @@ static DWORD WINAPI MonitorThread(LPVOID lpParam)
 
     RemoveHooks();
     CloseSharedMemory();
-    NotifyDpiReset();
+    ResetWindows();
     FreeLibraryAndExitThread(g_hSelf, 0);
     return 0;
 }
