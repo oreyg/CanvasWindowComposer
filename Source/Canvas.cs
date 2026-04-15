@@ -88,6 +88,19 @@ internal sealed class Canvas
         _camY = worldY + worldH / 2 - screenH / (2 * _zoom);
     }
 
+    /// <summary>Check if a window's projected screen rect overlaps with the screen.</summary>
+    public bool IsWindowOnScreen(IntPtr hWnd, int screenW, int screenH)
+    {
+        if (!_windows.TryGetValue(hWnd, out var world))
+            return false;
+
+        var (sx, sy) = WorldToScreen(world.X, world.Y);
+        var (sw, sh) = WorldToScreenSize(world.W, world.H);
+
+        return sx + sw > 0 && sx < screenW &&
+               sy + sh > 0 && sy < screenH;
+    }
+
     public void ResetCamera()
     {
         _camX = 0;
