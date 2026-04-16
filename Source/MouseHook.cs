@@ -127,18 +127,23 @@ internal sealed class MouseHook : IDisposable
             switch (msg)
             {
                 case NativeMethods.WM_MBUTTONDOWN:
-                    // Middle-click on desktop, or Alt-only+middle-click anywhere
-                    bool alt = IsAltDown() && !IsCtrlDown() && !IsShiftDown();
-                    if (IsDesktopOrTaskbarAt(hookStruct.pt) || alt)
                     {
-                        _dragging = true;
-                        _altDrag = alt;
-                        _lastPoint = hookStruct.pt;
-                        _pendingDx = 0;
-                        _pendingDy = 0;
-                        _hasPending = false;
-                        DragStarted?.Invoke();
-                        return (IntPtr)1; // consume
+                        // Middle-click on desktop, or Alt-only+middle-click anywhere
+                        bool alt = !AppConfig.DisableAltPan
+                                && IsAltDown()
+                                && !IsCtrlDown()
+                                && !IsShiftDown();
+                        if (alt || IsDesktopOrTaskbarAt(hookStruct.pt))
+                        {
+                            _dragging = true;
+                            _altDrag = alt;
+                            _lastPoint = hookStruct.pt;
+                            _pendingDx = 0;
+                            _pendingDy = 0;
+                            _hasPending = false;
+                            DragStarted?.Invoke();
+                            return (IntPtr)1; // consume
+                        }
                     }
                     break;
 
@@ -174,17 +179,21 @@ internal sealed class MouseHook : IDisposable
                     break;
 
                 case NativeMethods.WM_MOUSEWHEEL:
-                    // Alt+ScrollWheel on desktop = zoom
-                    if (IsAltDown() && IsDesktopOrTaskbarAt(hookStruct.pt))
+                    if (!AppConfig.DisableZoom)
                     {
-                        // mouseData high word = scroll delta (positive = scroll up = zoom in)
-                        int delta = (short)(hookStruct.mouseData >> 16);
-                        Interlocked.Add(ref _pendingZoomDelta, delta);
-                        _zoomCenterX = hookStruct.pt.X;
-                        _zoomCenterY = hookStruct.pt.Y;
-                        _hasZoomPending = true;
-                        NotifyInput();
-                        return (IntPtr)1; // consume to prevent other scroll behavior
+                        // Alt+ScrollWheel on desktop = zoom
+                        bool alt = IsAltDown() && !IsCtrlDown() && !IsShiftDown();
+                        if (alt && IsDesktopOrTaskbarAt(hookStruct.pt))
+                        {
+                            // mouseData high word = scroll delta (positive = scroll up = zoom in)
+                            int delta = (short)(hookStruct.mouseData >> 16);
+                            Interlocked.Add(ref _pendingZoomDelta, delta);
+                            _zoomCenterX = hookStruct.pt.X;
+                            _zoomCenterY = hookStruct.pt.Y;
+                            _hasZoomPending = true;
+                            NotifyInput();
+                            return (IntPtr)1; // consume to prevent other scroll behavior
+                        }
                     }
                     break;
             }

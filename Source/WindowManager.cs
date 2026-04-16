@@ -41,7 +41,7 @@ internal sealed class WindowManager
 
         bool isZoomed = Math.Abs(_canvas.Zoom - 1.0) > 0.001;
 
-        if (updateDpi && isZoomed)
+        if (!AppConfig.DisableDpiZoom && updateDpi && isZoomed)
             _sharedMem.WriteScale(_canvas.Zoom);
 
         // Build batch for all visible windows
@@ -65,7 +65,7 @@ internal sealed class WindowManager
             // Clip off-screen windows to an empty region so they render
             // nothing but stay positioned — prevents apps from fighting back.
             bool wasClipped = _clippedWindows.Contains(hWnd);
-            if (!onScreen)
+            if (!AppConfig.DisableGreedyDraw && !onScreen)
             {
                 if (!wasClipped)
                 {
@@ -99,7 +99,7 @@ internal sealed class WindowManager
 
         // Send DPI changed before positioning so windows re-render
         // at the correct size before being moved
-        if (dpiWindows is { Count: > 0 })
+        if (!AppConfig.DisableDpiZoom && dpiWindows is { Count: > 0 })
         {
             uint virtualDpi = (uint)(_baseDpi * _canvas.Zoom + 0.5);
             SendDpiChanged(dpiWindows, virtualDpi);
@@ -154,8 +154,11 @@ internal sealed class WindowManager
         if (isZoomed && IsDpiAdaptive(hWnd))
         {
             InjectDpiHook(hWnd);
-            uint virtualDpi = (uint)(_baseDpi * _canvas.Zoom + 0.5);
-            SendDpiChanged(new List<IntPtr> { hWnd }, virtualDpi);
+            if (!AppConfig.DisableDpiZoom)
+            {
+                uint virtualDpi = (uint)(_baseDpi * _canvas.Zoom + 0.5);
+                SendDpiChanged(new List<IntPtr> { hWnd }, virtualDpi);
+            }
         }
     }
 

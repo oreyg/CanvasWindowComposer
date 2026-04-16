@@ -33,6 +33,8 @@ internal sealed class TrayApp : ApplicationContext
 
     public TrayApp()
     {
+        AppConfig.Load();
+        AppConfig.StartObservingChanges();
         _sharedMem = new ZoomSharedMemory();
         _injector = new DllInjector();
         _vds = new VirtualDesktopService();
@@ -43,7 +45,7 @@ internal sealed class TrayApp : ApplicationContext
         _search = new SearchOverlay(_canvas, _wm, _minimap);
         _inertia = new InertiaEngine(_canvas, _wm);
         _inertia.SetMinimap(_minimap);
-        _inertia.SetUiControl(_minimap); // any Control for BeginInvoke marshaling
+        _inertia.SetUiControl(_minimap);
         _mouseHook = new MouseHook();
 
         _mouseHook.DragStarted += () => _inertia.Cancel();
@@ -51,7 +53,12 @@ internal sealed class TrayApp : ApplicationContext
         // Hidden message window for hotkeys and input
         _msgWindow = new MessageWindow();
         _msgWindow.RegisterHandlers(
-            onSearchHotkey: () => _search.Toggle(),
+            onSearchHotkey: () => { 
+                if (!AppConfig.DisableSearch)
+                {
+                    _search.Toggle();
+                }
+            },
             onCanvasInput: OnCanvasInput);
         _mouseHook.SetNotifyTarget(_msgWindow.Handle);
 
@@ -62,6 +69,8 @@ internal sealed class TrayApp : ApplicationContext
 
         var toggleItem = new ToolStripMenuItem("Enabled", null, OnToggle) { Checked = true };
         var resetZoomItem = new ToolStripMenuItem("Reset Zoom", null, (_, _) => _wm.Reset());
+        var openConfigItem = new ToolStripMenuItem("Open Config Directory", null,
+            (_, _) => System.Diagnostics.Process.Start("explorer.exe", AppConfig.ConfigDir));
         var exitItem = new ToolStripMenuItem("Exit", null, OnExit);
 
         var menu = new ContextMenuStrip();
@@ -69,6 +78,7 @@ internal sealed class TrayApp : ApplicationContext
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(toggleItem);
         menu.Items.Add(resetZoomItem);
+        menu.Items.Add(openConfigItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(exitItem);
 
