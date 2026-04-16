@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Windows.Forms;
@@ -15,6 +16,9 @@ internal sealed class TrayApp : ApplicationContext
     private readonly DllInjector _injector;
     private readonly Canvas _canvas;
     private readonly WindowManager _wm;
+    private readonly VirtualDesktopService _vds;
+    private readonly Dictionary<Guid, CanvasState> _desktopStates = new();
+    private Guid _lastDesktopId;
     private readonly MinimapOverlay _minimap;
     private readonly SearchOverlay _search;
     private readonly HotkeyWindow _hotkeyWindow;
@@ -32,8 +36,10 @@ internal sealed class TrayApp : ApplicationContext
     {
         _sharedMem = new ZoomSharedMemory();
         _injector = new DllInjector();
+        _vds = new VirtualDesktopService();
+        _lastDesktopId = _vds.CurrentDesktopId;
         _canvas = new Canvas();
-        _wm = new WindowManager(_canvas, _injector, _sharedMem);
+        _wm = new WindowManager(_canvas, _injector, _sharedMem, _vds);
         _minimap = new MinimapOverlay(_canvas);
         _search = new SearchOverlay(_canvas, _wm, _minimap);
         _hotkeyWindow = new HotkeyWindow(() => _search.Toggle());
@@ -149,6 +155,10 @@ internal sealed class TrayApp : ApplicationContext
 
     private void OnMoveTick(object? sender, EventArgs e)
     {
+        // Check for virtual desktop switch
+        if (_vds.CheckDesktopChanged())
+            OnDesktopSwitched();
+
         bool moved = false;
         bool zoomed = false;
 
@@ -183,6 +193,31 @@ internal sealed class TrayApp : ApplicationContext
             _wm.Reconcile();
             _wm.RemoveStale();
         }
+    }
+
+    private void OnDesktopSwitched()
+    {
+        _inertia.Cancel();
+
+        // Save current canvas state for the previous desktop
+        // (we need to find the previous ID — it was stored before CheckDesktopChanged updated it)
+        // Since CheckDesktopChanged already updated _vds.CurrentDesktopId to the NEW one,
+        // we save under whatever key we last stored. Use a tracking field.
+        if (_lastDesktopId != Guid.Empty)
+        {
+            _wm.Reset();
+            _desktopStates[_lastDesktopId] = _canvas.SaveState();
+        }
+
+        _lastDesktopId = _vds.CurrentDesktopId;
+
+        // Load state for new desktop, or start fresh
+        if (_desktopStates.TryGetValue(_lastDesktopId, out var state))
+            _canvas.LoadState(state);
+
+        // Always reproject to discover windows and apply state
+        _wm.Reproject(updateDpi: true);
+        _minimap.ShowBriefly();
     }
 
     private void OnToggle(object? sender, EventArgs e)
@@ -222,6 +257,7 @@ internal sealed class TrayApp : ApplicationContext
         _wm.Reset();
         _mouseHook.Dispose();
         _inertia.Dispose();
+        _vds.Dispose();
         _sharedMem.Dispose();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();

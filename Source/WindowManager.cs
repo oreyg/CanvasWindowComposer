@@ -14,6 +14,7 @@ internal sealed class WindowManager
     private readonly Canvas _canvas;
     private readonly DllInjector _injector;
     private readonly ZoomSharedMemory _sharedMem;
+    private readonly VirtualDesktopService? _vds;
     private uint _baseDpi = 96;
 
     // Track last projected screen positions to detect manual moves
@@ -22,11 +23,13 @@ internal sealed class WindowManager
     // Windows with clipped (empty) region to prevent them from fighting off-screen
     private readonly HashSet<IntPtr> _clippedWindows = new();
 
-    public WindowManager(Canvas canvas, DllInjector injector, ZoomSharedMemory sharedMem)
+    public WindowManager(Canvas canvas, DllInjector injector, ZoomSharedMemory sharedMem,
+        VirtualDesktopService? vds = null)
     {
         _canvas = canvas;
         _injector = injector;
         _sharedMem = sharedMem;
+        _vds = vds;
     }
 
     /// <summary>
@@ -274,8 +277,10 @@ internal sealed class WindowManager
 
         NativeMethods.EnumWindows((hWnd, _) =>
         {
-            if (!_canvas.HasWindow(hWnd) && IsManageable(hWnd, ownPid))
-                toAdd.Add(hWnd);
+            if (_canvas.HasWindow(hWnd)) return true;
+            if (!IsManageable(hWnd, ownPid)) return true;
+            if (_vds != null && !_vds.IsOnCurrentDesktop(hWnd)) return true;
+            toAdd.Add(hWnd);
             return true;
         }, IntPtr.Zero);
 

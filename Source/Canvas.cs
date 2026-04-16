@@ -8,6 +8,12 @@ internal struct WorldRect
     public double X, Y, W, H;
 }
 
+internal struct CanvasState
+{
+    public double CamX, CamY, Zoom;
+    public Dictionary<IntPtr, WorldRect> Windows;
+}
+
 /// <summary>
 /// Pure model: camera + world map + projections.
 /// No Win32 knowledge — WindowManager consumes this to apply state.
@@ -86,6 +92,32 @@ internal sealed class Canvas
     {
         _camX = worldX + worldW / 2 - screenW / (2 * _zoom);
         _camY = worldY + worldH / 2 - screenH / (2 * _zoom);
+    }
+
+    /// <summary>Save current camera + world map state.</summary>
+    public CanvasState SaveState()
+    {
+        return new CanvasState
+        {
+            CamX = _camX,
+            CamY = _camY,
+            Zoom = _zoom,
+            Windows = new Dictionary<IntPtr, WorldRect>(_windows)
+        };
+    }
+
+    /// <summary>Restore camera + world map from saved state.</summary>
+    public void LoadState(CanvasState state)
+    {
+        _camX = state.CamX;
+        _camY = state.CamY;
+        _zoom = state.Zoom;
+        _windows.Clear();
+        if (state.Windows != null)
+        {
+            foreach (var (k, v) in state.Windows)
+                _windows[k] = v;
+        }
     }
 
     /// <summary>Check if a window's projected screen rect overlaps with the screen.</summary>
