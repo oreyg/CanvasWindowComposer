@@ -22,12 +22,14 @@ internal sealed class TrayApp : ApplicationContext
     private Guid _lastDesktopId;
     private readonly MinimapOverlay _minimap;
     private readonly SearchOverlay _search;
+    private readonly OverviewOverlay _overview;
     private bool _enabled = true;
     private const long ForegroundSuppressionMs = 100; // ignore focus events shortly after minimize/close
     private long _lastWindowLostTick;
     private IntPtr _winEventHook_System_Minimize;
     private IntPtr _winEventHook_Object_Destroy;
     private IntPtr _winEventHook_System_Foreground;
+    private IntPtr _winEventHook_System_Switch;
     private IntPtr _winEventHook_Object_LocationChange;
     private readonly NativeMethods.WinEventDelegate _winEventProc;
 
@@ -43,6 +45,7 @@ internal sealed class TrayApp : ApplicationContext
         _wm = new WindowManager(_canvas, _injector, _sharedMem, _vds);
         _minimap = new MinimapOverlay(_canvas);
         _search = new SearchOverlay(_canvas, _wm, _minimap);
+        _overview = new OverviewOverlay(_canvas, _wm, _minimap);
         _inertia = new InertiaEngine(_canvas, _wm);
         _inertia.SetMinimap(_minimap);
         _inertia.SetUiControl(_minimap);
@@ -53,12 +56,11 @@ internal sealed class TrayApp : ApplicationContext
         // Hidden message window for hotkeys and input
         _msgWindow = new MessageWindow();
         _msgWindow.RegisterHandlers(
-            onSearchHotkey: () => { 
+            onSearchHotkey: () => {
                 if (!AppConfig.DisableSearch)
-                {
                     _search.Toggle();
-                }
             },
+            onOverviewHotkey: () => _overview.Toggle(),
             onCanvasInput: OnCanvasInput);
         _mouseHook.SetNotifyTarget(_msgWindow.Handle);
 
@@ -107,6 +109,13 @@ internal sealed class TrayApp : ApplicationContext
             _winEventProc,
             0, 0,
             NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
+        _winEventHook_System_Switch = NativeMethods.SetWinEventHook(
+            NativeMethods.EVENT_SYSTEM_SWITCHSTART,
+            NativeMethods.EVENT_SYSTEM_SWITCHEND,
+            IntPtr.Zero,
+            _winEventProc,
+            0, 0,
+            NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
         _winEventHook_Object_Destroy = NativeMethods.SetWinEventHook(
             NativeMethods.EVENT_OBJECT_DESTROY,
             NativeMethods.EVENT_OBJECT_DESTROY,
@@ -133,6 +142,18 @@ internal sealed class TrayApp : ApplicationContext
             case NativeMethods.EVENT_SYSTEM_MINIMIZESTART:
             case NativeMethods.EVENT_OBJECT_DESTROY:
                 _lastWindowLostTick = Environment.TickCount64;
+                break;
+
+            case NativeMethods.EVENT_SYSTEM_SWITCHSTART:
+                // Alt+Tab switcher appeared — unclip so thumbnails show content
+                _wm.SuspendGreedyDraw = true;
+                _wm.UnclipAll();
+                break;
+
+            case NativeMethods.EVENT_SYSTEM_SWITCHEND:
+                // Alt+Tab switcher closed — re-enable clipping
+                _wm.SuspendGreedyDraw = false;
+                _wm.ReclipAll();
                 break;
 
             case NativeMethods.EVENT_SYSTEM_MINIMIZEEND:
@@ -262,6 +283,8 @@ internal sealed class TrayApp : ApplicationContext
             NativeMethods.UnhookWinEvent(_winEventHook_System_Minimize);
         if (_winEventHook_System_Foreground != IntPtr.Zero)
             NativeMethods.UnhookWinEvent(_winEventHook_System_Foreground);
+        if (_winEventHook_System_Switch != IntPtr.Zero)
+            NativeMethods.UnhookWinEvent(_winEventHook_System_Switch);
         if (_winEventHook_Object_Destroy != IntPtr.Zero)
             NativeMethods.UnhookWinEvent(_winEventHook_Object_Destroy);
         if (_winEventHook_Object_LocationChange != IntPtr.Zero)
@@ -269,6 +292,8 @@ internal sealed class TrayApp : ApplicationContext
         _inertia.Dispose(); // cancel + join thread
         _wm.Reset();
         _mouseHook.Dispose();
+        _overview.Close();
+        _overview.Dispose();
         _search.Close();
         _minimap.Close();
         _vds.Dispose();

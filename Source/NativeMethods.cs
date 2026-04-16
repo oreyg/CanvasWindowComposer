@@ -76,6 +76,8 @@ internal static class NativeMethods
 
     // --- WinEvent constants ---
     public const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+    public const uint EVENT_SYSTEM_SWITCHSTART = 0x0014;
+    public const uint EVENT_SYSTEM_SWITCHEND = 0x0015;
     public const uint EVENT_SYSTEM_MINIMIZESTART = 0x0016;
     public const uint EVENT_SYSTEM_MINIMIZEEND = 0x0017;
     public const uint EVENT_OBJECT_DESTROY = 0x8001;
@@ -209,6 +211,32 @@ internal static class NativeMethods
     // --- DWM ---
     [DllImport("dwmapi.dll")]
     public static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out int pvAttribute, int cbAttribute);
+
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmRegisterThumbnail(IntPtr hwndDestination, IntPtr hwndSource, out IntPtr phThumbnailId);
+
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmUnregisterThumbnail(IntPtr hThumbnailId);
+
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmUpdateThumbnailProperties(IntPtr hThumbnailId, ref DWM_THUMBNAIL_PROPERTIES ptnProperties);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct DWM_THUMBNAIL_PROPERTIES
+    {
+        public uint dwFlags;
+        public RECT rcDestination;
+        public RECT rcSource;
+        public byte opacity;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool fVisible;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool fSourceClientAreaOnly;
+    }
+
+    public const uint DWM_TNP_RECTDESTINATION = 0x00000001;
+    public const uint DWM_TNP_VISIBLE = 0x00000008;
+    public const uint DWM_TNP_OPACITY = 0x00000004;
 
     // --- WinEvent hooks ---
     [DllImport("user32.dll")]

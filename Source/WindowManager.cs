@@ -23,6 +23,9 @@ internal sealed class WindowManager
     // Windows with clipped (empty) region to prevent them from fighting off-screen
     private readonly HashSet<IntPtr> _clippedWindows = new();
 
+    // Temporarily suspends greedy draw (SetWindowRgn clipping)
+    public bool SuspendGreedyDraw { get; set; }
+
     public WindowManager(Canvas canvas, DllInjector injector, ZoomSharedMemory sharedMem,
         VirtualDesktopService? vds = null)
     {
@@ -65,7 +68,7 @@ internal sealed class WindowManager
             // Clip off-screen windows to an empty region so they render
             // nothing but stay positioned — prevents apps from fighting back.
             bool wasClipped = _clippedWindows.Contains(hWnd);
-            if (!AppConfig.DisableGreedyDraw && !onScreen)
+            if (!AppConfig.DisableGreedyDraw && !SuspendGreedyDraw && !onScreen)
             {
                 if (!wasClipped)
                 {
@@ -211,6 +214,20 @@ internal sealed class WindowManager
             _canvas.RemoveWindow(hWnd);
             _lastScreen.Remove(hWnd);
         }
+    }
+
+    /// <summary>Restore regions on all clipped windows (for overview thumbnails).</summary>
+    public void UnclipAll()
+    {
+        foreach (var hWnd in _clippedWindows)
+            NativeMethods.SetWindowRgn(hWnd, IntPtr.Zero, true);
+    }
+
+    /// <summary>Re-clip windows that should be off-screen.</summary>
+    public void ReclipAll()
+    {
+        foreach (var hWnd in _clippedWindows)
+            NativeMethods.SetWindowRgn(hWnd, NativeMethods.CreateRectRgn(0, 0, 0, 0), true);
     }
 
     /// <summary>Register a new window into the canvas from its screen position.</summary>
