@@ -62,6 +62,19 @@ internal sealed class MinimapOverlay : Form
         _fadeTimer.Tick += OnFadeTick;
     }
 
+    /// <summary>Force-show the minimap briefly (e.g., on desktop switch).</summary>
+    public void ShowBriefly()
+    {
+        PositionOnScreen();
+        Invalidate();
+
+        if (!Visible) Show();
+
+        _fadeTicksRemaining = FadeDelayMs / 100;
+        Opacity = 0.75;
+        _fadeTimer.Start();
+    }
+
     /// <summary>Call when the canvas changes. Shows the minimap and resets the fade timer.</summary>
     public void NotifyCanvasChanged()
     {
