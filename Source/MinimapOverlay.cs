@@ -66,9 +66,9 @@ internal sealed class MinimapOverlay : Form
     public void ShowBriefly()
     {
         PositionOnScreen();
-        Invalidate();
-
         if (!Visible) Show();
+        Invalidate();
+        Update();
 
         _fadeTicksRemaining = FadeDelayMs / 100;
         Opacity = 0.75;
@@ -85,9 +85,9 @@ internal sealed class MinimapOverlay : Form
         }
 
         PositionOnScreen();
-        Invalidate();
-
         if (!Visible) Show();
+        Invalidate();
+        Update(); // force immediate repaint — Invalidate alone gets starved by input messages
 
         // Reset fade timer
         _fadeTicksRemaining = FadeDelayMs / 100;

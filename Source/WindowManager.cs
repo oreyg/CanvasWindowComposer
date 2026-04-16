@@ -84,7 +84,10 @@ internal sealed class WindowManager
                 _clippedWindows.Remove(hWnd);
             }
 
-            batch.Add((hWnd, sx, sy, sw, sh, false));
+            // Position-only during pan (no zoom) — avoids triggering
+            // layout recalculation in apps like Firefox
+            bool posOnly = !updateDpi;
+            batch.Add((hWnd, sx, sy, sw, sh, posOnly));
             _lastScreen[hWnd] = (sx, sy, sw, sh);
 
             if (dpiWindows != null && IsDpiAdaptive(hWnd))

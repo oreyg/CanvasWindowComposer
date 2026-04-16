@@ -192,6 +192,10 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool EndDeferWindowPos(IntPtr hWinPosInfo);
 
+    // --- DWM sync ---
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmFlush();
+
     // --- DPI ---
     [DllImport("user32.dll")]
     public static extern uint GetDpiForWindow(IntPtr hwnd);
