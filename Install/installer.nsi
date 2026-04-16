@@ -6,6 +6,16 @@ OutFile "CanvasWindowComposer-Setup.exe"
 InstallDir "$PROGRAMFILES64\CanvasWindowComposer"
 RequestExecutionLevel admin
 
+; --- Version info (shown in file properties) ---
+VIProductVersion "1.5.0.0"
+VIFileVersion "1.5.0.0"
+VIAddVersionKey "ProductName" "Canvas Window Composer"
+VIAddVersionKey "CompanyName" "Devnova"
+VIAddVersionKey "LegalCopyright" "Copyright (c) 2026 Devnova"
+VIAddVersionKey "FileDescription" "Canvas Window Composer Installer"
+VIAddVersionKey "FileVersion" "1.5.0"
+VIAddVersionKey "ProductVersion" "1.5.0"
+
 ; --- UI ---
 !define MUI_ABORTWARNING
 !define MUI_FINISHPAGE_RUN "$INSTDIR\CanvasDesktop.exe"
@@ -43,7 +53,8 @@ Section "Install"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CanvasWindowComposer" "DisplayName" "Canvas Window Composer"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CanvasWindowComposer" "UninstallString" '"$INSTDIR\Uninstall.exe"'
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CanvasWindowComposer" "InstallLocation" "$INSTDIR"
-    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CanvasWindowComposer" "Publisher" "CanvasWindowComposer"
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CanvasWindowComposer" "Publisher" "Devnova"
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CanvasWindowComposer" "DisplayVersion" "1.5.0"
     WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CanvasWindowComposer" "NoModify" 1
     WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CanvasWindowComposer" "NoRepair" 1
 SectionEnd
