@@ -11,7 +11,8 @@ internal sealed class TrayApp : ApplicationContext
     private readonly NotifyIcon _trayIcon;
     private readonly MouseHook _mouseHook;
     private readonly InertiaEngine _inertia;
-    private readonly Timer _moveTimer;
+    private readonly Timer _bgTimer; // reconcile, VD polling
+    private readonly MessageWindow _msgWindow;
     private readonly ZoomSharedMemory _sharedMem;
     private readonly DllInjector _injector;
     private readonly Canvas _canvas;
@@ -21,9 +22,7 @@ internal sealed class TrayApp : ApplicationContext
     private Guid _lastDesktopId;
     private readonly MinimapOverlay _minimap;
     private readonly SearchOverlay _search;
-    private readonly HotkeyWindow _hotkeyWindow;
     private bool _enabled = true;
-    private int _reconcileCounter;
     private const long ForegroundSuppressionMs = 100; // ignore focus events shortly after minimize/close
     private long _lastWindowLostTick;
     private IntPtr _winEventHook_System_Minimize;
@@ -42,19 +41,24 @@ internal sealed class TrayApp : ApplicationContext
         _wm = new WindowManager(_canvas, _injector, _sharedMem, _vds);
         _minimap = new MinimapOverlay(_canvas);
         _search = new SearchOverlay(_canvas, _wm, _minimap);
-        _hotkeyWindow = new HotkeyWindow(() => _search.Toggle());
         _inertia = new InertiaEngine(_canvas, _wm);
         _inertia.SetMinimap(_minimap);
+        _inertia.SetUiControl(_minimap); // any Control for BeginInvoke marshaling
         _mouseHook = new MouseHook();
 
-        _mouseHook.DragStarted += () =>
-        {
-            _inertia.Cancel();
-        };
+        _mouseHook.DragStarted += () => _inertia.Cancel();
 
-        _moveTimer = new Timer { Interval = 16 };
-        _moveTimer.Tick += OnMoveTick;
-        _moveTimer.Start();
+        // Hidden message window for hotkeys and input
+        _msgWindow = new MessageWindow();
+        _msgWindow.RegisterHandlers(
+            onSearchHotkey: () => _search.Toggle(),
+            onCanvasInput: OnCanvasInput);
+        _mouseHook.SetNotifyTarget(_msgWindow.Handle);
+
+        // Background timer for reconcile and VD polling only
+        _bgTimer = new System.Windows.Forms.Timer { Interval = 500 };
+        _bgTimer.Tick += OnBgTick;
+        _bgTimer.Start();
 
         var toggleItem = new ToolStripMenuItem("Enabled", null, OnToggle) { Checked = true };
         var resetZoomItem = new ToolStripMenuItem("Reset Zoom", null, (_, _) => _wm.Reset());
@@ -153,12 +157,9 @@ internal sealed class TrayApp : ApplicationContext
         }
     }
 
-    private void OnMoveTick(object? sender, EventArgs e)
+    /// <summary>Called immediately via WM_CANVAS_INPUT when mouse input arrives.</summary>
+    private void OnCanvasInput()
     {
-        // Check for virtual desktop switch
-        if (_vds.CheckDesktopChanged())
-            OnDesktopSwitched();
-
         bool moved = false;
         bool zoomed = false;
 
@@ -186,10 +187,16 @@ internal sealed class TrayApp : ApplicationContext
             _wm.Reproject(updateDpi: zoomed);
             _minimap.NotifyCanvasChanged();
         }
+    }
 
-        if (_canvas.IsTransformed && ++_reconcileCounter >= 30)
+    /// <summary>Background timer for inertia, reconcile, VD polling.</summary>
+    private void OnBgTick(object? sender, EventArgs e)
+    {
+        if (_vds.CheckDesktopChanged())
+            OnDesktopSwitched();
+
+        if (_canvas.IsTransformed)
         {
-            _reconcileCounter = 0;
             _wm.Reconcile();
             _wm.RemoveStale();
         }
@@ -238,8 +245,9 @@ internal sealed class TrayApp : ApplicationContext
 
     private void OnExit(object? sender, EventArgs e)
     {
-        _moveTimer.Stop();
-        _moveTimer.Dispose();
+        _bgTimer.Stop();
+        _bgTimer.Dispose();
+        _msgWindow.Dispose();
         if (_winEventHook_System_Minimize != IntPtr.Zero)
             NativeMethods.UnhookWinEvent(_winEventHook_System_Minimize);
         if (_winEventHook_System_Foreground != IntPtr.Zero)
@@ -251,7 +259,6 @@ internal sealed class TrayApp : ApplicationContext
         _inertia.Cancel();
         _search.Close();
         _search.Dispose();
-        _hotkeyWindow.Dispose();
         _minimap.Close();
         _minimap.Dispose();
         _wm.Reset();

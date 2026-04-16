@@ -19,11 +19,15 @@ internal sealed class MouseHook : IDisposable
     private bool _altDrag; // true when drag was initiated with Alt (consume all input)
     private NativeMethods.POINT _lastPoint;
 
-    // Accumulated drag delta (written by hook, read by timer)
+    // Accumulated drag delta (written by hook, read by message handler)
     private int _pendingDx;
     private int _pendingDy;
     private volatile bool _hasPending;
     private volatile bool _dragJustEnded;
+
+    // Target window to post input notifications to
+    private IntPtr _notifyHwnd;
+    // Uses MessageWindow.WM_CANVAS_INPUT
 
     // Accumulated zoom scroll (written by hook, read by timer)
     private int _pendingZoomDelta;
@@ -32,6 +36,18 @@ internal sealed class MouseHook : IDisposable
     private volatile bool _hasZoomPending;
 
     public bool Enabled { get; set; } = true;
+
+    /// <summary>Set the window handle that receives WM_CANVAS_INPUT when input arrives.</summary>
+    public void SetNotifyTarget(IntPtr hwnd) => _notifyHwnd = hwnd;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    private void NotifyInput()
+    {
+        if (_notifyHwnd != IntPtr.Zero)
+            PostMessage(_notifyHwnd, (uint)MessageWindow.WM_CANVAS_INPUT, IntPtr.Zero, IntPtr.Zero);
+    }
 
     /// <summary>Called once when middle-click drag starts on the desktop.</summary>
     public event Action? DragStarted;
@@ -138,6 +154,7 @@ internal sealed class MouseHook : IDisposable
                             Interlocked.Add(ref _pendingDx, dx);
                             Interlocked.Add(ref _pendingDy, dy);
                             _hasPending = true;
+                            NotifyInput();
                         }
 
                         // Don't consume moves — cursor must move freely.
@@ -151,6 +168,7 @@ internal sealed class MouseHook : IDisposable
                     {
                         _dragging = false;
                         _dragJustEnded = true;
+                        NotifyInput();
                         return (IntPtr)1; // consume
                     }
                     break;
@@ -165,6 +183,7 @@ internal sealed class MouseHook : IDisposable
                         _zoomCenterX = hookStruct.pt.X;
                         _zoomCenterY = hookStruct.pt.Y;
                         _hasZoomPending = true;
+                        NotifyInput();
                         return (IntPtr)1; // consume to prevent other scroll behavior
                     }
                     break;
