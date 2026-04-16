@@ -17,8 +17,9 @@ internal sealed class InertiaEngine : IDisposable
     private const double MaxDeltaMs = 60;       // clamp dt to prevent hitch jumps
     private const long VelocityWindowMs = 100;
 
+    private readonly object _lock = new();
     private readonly List<(double dx, double dy, long ticks)> _samples = new();
-    private double _vx, _vy;
+    private double _vx, _vy; // guarded by _lock
     private volatile bool _animating;
     private volatile bool _alive = true;
     private readonly ManualResetEventSlim _wakeEvent = new(false);
@@ -41,62 +42,68 @@ internal sealed class InertiaEngine : IDisposable
 
     public void RecordDelta(int dx, int dy)
     {
-        _samples.Add((dx, dy, Environment.TickCount64));
-        if (_samples.Count > SampleWindow)
-            _samples.RemoveRange(0, _samples.Count - SampleWindow);
+        lock (_lock)
+        {
+            _samples.Add((dx, dy, Environment.TickCount64));
+            if (_samples.Count > SampleWindow)
+                _samples.RemoveRange(0, _samples.Count - SampleWindow);
+        }
     }
 
     public void Release()
     {
-        if (_samples.Count < 2)
+        lock (_lock)
         {
+            if (_samples.Count < 2)
+            {
+                _samples.Clear();
+                return;
+            }
+
+            double sumDx = 0, sumDy = 0;
+            long now = Environment.TickCount64;
+            long oldest = now;
+
+            for (int i = _samples.Count - 1; i >= 0; i--)
+            {
+                var s = _samples[i];
+                if (now - s.ticks > VelocityWindowMs) break;
+                sumDx += s.dx;
+                sumDy += s.dy;
+                oldest = s.ticks;
+            }
+
             _samples.Clear();
-            return;
+
+            long elapsed = now - oldest;
+            if (elapsed < 1) return;
+
+            _vx = sumDx / elapsed;
+            _vy = sumDy / elapsed;
         }
-
-        // Sum deltas over the velocity window and divide by elapsed time
-        // to get velocity in pixels per millisecond
-        double sumDx = 0, sumDy = 0;
-        long now = Environment.TickCount64;
-        long oldest = now;
-
-        for (int i = _samples.Count - 1; i >= 0; i--)
-        {
-            var s = _samples[i];
-            if (now - s.ticks > VelocityWindowMs) break;
-            sumDx += s.dx;
-            sumDy += s.dy;
-            oldest = s.ticks;
-        }
-
-        _samples.Clear();
-
-        long elapsed = now - oldest;
-        if (elapsed < 1) return;
-
-        // Pixels per millisecond
-        _vx = sumDx / elapsed;
-        _vy = sumDy / elapsed;
 
         if (Math.Abs(_vx) < StopThresholdPxPerMs && Math.Abs(_vy) < StopThresholdPxPerMs)
             return;
 
         _animating = true;
-        _wakeEvent.Set(); // wake the thread
+        _wakeEvent.Set();
     }
 
     public void Cancel()
     {
         _animating = false;
-        _vx = _vy = 0;
-        _samples.Clear();
+        lock (_lock)
+        {
+            _vx = _vy = 0;
+            _samples.Clear();
+        }
     }
 
     private void ThreadLoop()
     {
         while (_alive)
         {
-            _wakeEvent.Wait(); // sleep until Release() signals
+            _wakeEvent.Wait();
 
             long lastTick = Environment.TickCount64;
 
@@ -108,19 +115,24 @@ internal sealed class InertiaEngine : IDisposable
                 double dt = Math.Clamp(now - lastTick, 1, MaxDeltaMs);
                 lastTick = now;
 
-                double decay = Math.Pow(FrictionPerFrame, dt / TargetFrameMs);
-                _vx *= decay;
-                _vy *= decay;
+                double vx, vy;
+                lock (_lock)
+                {
+                    double decay = Math.Pow(FrictionPerFrame, dt / TargetFrameMs);
+                    _vx *= decay;
+                    _vy *= decay;
+                    vx = _vx;
+                    vy = _vy;
+                }
 
-                if (Math.Abs(_vx) < StopThresholdPxPerMs && Math.Abs(_vy) < StopThresholdPxPerMs)
+                if (Math.Abs(vx) < StopThresholdPxPerMs && Math.Abs(vy) < StopThresholdPxPerMs)
                 {
                     _animating = false;
                     break;
                 }
 
-                // Displacement = velocity (px/ms) * dt (ms)
-                int dx = (int)Math.Round(_vx * dt);
-                int dy = (int)Math.Round(_vy * dt);
+                int dx = (int)Math.Round(vx * dt);
+                int dy = (int)Math.Round(vy * dt);
 
                 if ((dx != 0 || dy != 0) && _uiControl != null)
                 {
@@ -135,7 +147,7 @@ internal sealed class InertiaEngine : IDisposable
                 }
             }
 
-            _wakeEvent.Reset(); // go back to sleep
+            _wakeEvent.Reset();
         }
     }
 
@@ -143,7 +155,7 @@ internal sealed class InertiaEngine : IDisposable
     {
         _alive = false;
         _animating = false;
-        _wakeEvent.Set(); // wake to exit
+        _wakeEvent.Set();
         _thread.Join(1000);
         _wakeEvent.Dispose();
     }

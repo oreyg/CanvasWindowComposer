@@ -29,10 +29,10 @@ internal sealed class MouseHook : IDisposable
     private IntPtr _notifyHwnd;
     // Uses MessageWindow.WM_CANVAS_INPUT
 
-    // Accumulated zoom scroll (written by hook, read by timer)
+    // Accumulated zoom scroll (written by hook, read by UI thread)
     private int _pendingZoomDelta;
-    private int _zoomCenterX;
-    private int _zoomCenterY;
+    private volatile int _zoomCenterX;
+    private volatile int _zoomCenterY;
     private volatile bool _hasZoomPending;
 
     public bool Enabled { get; set; } = true;

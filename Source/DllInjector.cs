@@ -12,6 +12,8 @@ namespace CanvasDesktop;
 /// </summary>
 internal sealed class DllInjector
 {
+    private const uint RemoteThreadTimeoutMs = 5000;
+
     private readonly string _dllPath;
     // processId → remote HMODULE of the injected DLL
     private readonly Dictionary<uint, IntPtr> _injected = new();
@@ -106,7 +108,7 @@ internal sealed class DllInjector
                 return false;
             }
 
-            WaitForSingleObject(hThread, 5000);
+            WaitForSingleObject(hThread, RemoteThreadTimeoutMs);
 
             // Get the HMODULE of the loaded DLL (returned by LoadLibrary as thread exit code)
             GetExitCodeThread(hThread, out IntPtr remoteModule);
@@ -149,7 +151,7 @@ internal sealed class DllInjector
             if (hThread == IntPtr.Zero)
                 return false;
 
-            WaitForSingleObject(hThread, 5000);
+            WaitForSingleObject(hThread, RemoteThreadTimeoutMs);
             CloseHandle(hThread);
 
             _injected.Remove(processId);

@@ -256,14 +256,11 @@ internal sealed class TrayApp : ApplicationContext
             NativeMethods.UnhookWinEvent(_winEventHook_Object_Destroy);
         if (_winEventHook_Object_LocationChange != IntPtr.Zero)
             NativeMethods.UnhookWinEvent(_winEventHook_Object_LocationChange);
-        _inertia.Cancel();
-        _search.Close();
-        _search.Dispose();
-        _minimap.Close();
-        _minimap.Dispose();
+        _inertia.Dispose(); // cancel + join thread
         _wm.Reset();
         _mouseHook.Dispose();
-        _inertia.Dispose();
+        _search.Close();
+        _minimap.Close();
         _vds.Dispose();
         _sharedMem.Dispose();
         _trayIcon.Visible = false;

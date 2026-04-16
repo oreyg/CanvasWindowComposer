@@ -156,8 +156,6 @@ internal sealed class WindowManager
             InjectDpiHook(hWnd);
             uint virtualDpi = (uint)(_baseDpi * _canvas.Zoom + 0.5);
             SendDpiChanged(new List<IntPtr> { hWnd }, virtualDpi);
-            NativeMethods.RedrawWindow(hWnd, IntPtr.Zero, IntPtr.Zero,
-                NativeMethods.RDW_INVALIDATE | NativeMethods.RDW_UPDATENOW | NativeMethods.RDW_ALLCHILDREN);
         }
     }
 
@@ -327,11 +325,11 @@ internal sealed class WindowManager
         // Park 1px inside the nearest edge so the OS considers it "on-screen"
         int px = sx, py = sy;
 
-        if (sx + sw <= nearest.Left)        px = nearest.Left - sw + 1;
-        else if (sx >= nearest.Right)       px = nearest.Right - 1;
+        if (sx + sw <= nearest.Left)   px = nearest.Left - sw + 1;
+        else if (sx >= nearest.Right)  px = nearest.Right - 1;
 
-        if (sy + sh <= nearest.Top)         py = nearest.Top - sh + 1;
-        else if (sy >= nearest.Bottom)      py = nearest.Bottom - 1;
+        if (sy + sh <= nearest.Top)    py = nearest.Top - sh + 1;
+        else if (sy >= nearest.Bottom) py = nearest.Bottom - 1;
 
         return (px, py);
     }
@@ -464,8 +462,12 @@ internal sealed class WindowManager
 
     private static readonly HashSet<string> ExcludedClasses = new()
     {
-        "Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd",
-        "NotifyIconOverflowWindow", "Windows.UI.Core.CoreWindow"
+        "Progman",
+        "WorkerW",
+        "Shell_TrayWnd",
+        "Shell_SecondaryTrayWnd",
+        "NotifyIconOverflowWindow",
+        "Windows.UI.Core.CoreWindow"
     };
 
     /// <summary>Check whether a window should be managed by the canvas.</summary>
