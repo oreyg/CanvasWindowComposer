@@ -62,6 +62,12 @@ internal sealed class Canvas
 
     // ==================== CAMERA ====================
 
+    public void SetCamera(double camX, double camY)
+    {
+        _camX = camX;
+        _camY = camY;
+    }
+
     public void Pan(int screenDx, int screenDy)
     {
         _camX -= screenDx / _zoom;

@@ -47,6 +47,7 @@ internal sealed class TrayApp : ApplicationContext
         _search = new SearchOverlay(_canvas, _wm, _minimap);
         _overview = new OverviewOverlay(_canvas, _wm, _minimap);
         _overview.OverviewClosed += () => _lastOverlayClosedTick = Environment.TickCount64;
+        _overview.Warmup();
         _inertia = new InertiaEngine(_canvas, _wm);
         _inertia.SetMinimap(_minimap);
         _inertia.SetUiControl(_minimap);

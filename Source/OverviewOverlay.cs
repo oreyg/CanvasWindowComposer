@@ -35,6 +35,8 @@ internal sealed class OverviewOverlay : Form
     // Arrow key navigation (index into _thumbnails, -1 = none)
     private int _selectedIndex = -1;
 
+    private enum CloseAction { SyncCamera, KeepCamera }
+
     // Window drag state
     private bool _draggingWindow;
     private int _dragIndex = -1;
@@ -70,6 +72,25 @@ internal sealed class OverviewOverlay : Form
         MouseUp += OnMouseUp;
         MouseWheel += OnMouseWheel;
         MouseClick += OnMouseClick;
+    }
+
+    /// <summary>Pre-initialize D3D11 and grid thread to avoid hitch on first open.</summary>
+    public void Warmup()
+    {
+        if (_grid != null) return;
+
+        var screen = Screen.PrimaryScreen!.Bounds;
+        Location = new Point(screen.X, screen.Y);
+        Size = new Size(screen.Width, screen.Height);
+
+        // Force HWND creation without showing
+        _ = Handle;
+
+        _grid = new GridRenderer();
+        _grid.Initialize(Handle, screen.Width, screen.Height);
+        using (var g = CreateGraphics())
+            _grid.SetDpiScale(g.DpiX / 96f);
+        _grid.StartThread();
     }
 
     public void Toggle()
@@ -118,17 +139,38 @@ internal sealed class OverviewOverlay : Form
         _grid.Start(_camX, _camY, _zoom);
     }
 
-    private void HideOverview()
+    private void HideOverview(CloseAction action = CloseAction.SyncCamera)
     {
         _grid?.Stop();
         UnregisterThumbnails();
 
-        // Re-enable greedy draw and re-clip off-screen windows
+        if (action == CloseAction.SyncCamera)
+        {
+            _mainCanvas.SetCamera(_camX, _camY);
+            _wm.Reproject();
+            _minimap.NotifyCanvasChanged();
+        }
+
         _wm.SuspendGreedyDraw = false;
         _wm.ReclipAll();
 
         Hide();
         OverviewClosed?.Invoke();
+    }
+
+    /// <summary>Navigate main canvas to a window and close overview.</summary>
+    private void GoToWindow(IntPtr hWnd, WorldRect world)
+    {
+        int style = NativeMethods.GetWindowLong(hWnd, NativeMethods.GWL_STYLE);
+        if ((style & (int)NativeMethods.WS_MINIMIZE) != 0)
+            NativeMethods.ShowWindow(hWnd, NativeMethods.SW_RESTORE);
+
+        var screen = Screen.PrimaryScreen!.WorkingArea;
+        _mainCanvas.CenterOn(world.X, world.Y, world.W, world.H, screen.Width, screen.Height);
+        _wm.Reproject();
+        _minimap.NotifyCanvasChanged();
+        NativeMethods.SetForegroundWindow(hWnd);
+        HideOverview(CloseAction.KeepCamera);
     }
 
     private void FitToExtents(int screenW, int screenH)
@@ -246,15 +288,7 @@ internal sealed class OverviewOverlay : Form
         else if (e.KeyCode == Keys.Enter && _selectedIndex >= 0)
         {
             var (hWnd, _, world) = _thumbnails[_selectedIndex];
-            int style = NativeMethods.GetWindowLong(hWnd, NativeMethods.GWL_STYLE);
-            if ((style & (int)NativeMethods.WS_MINIMIZE) != 0)
-                NativeMethods.ShowWindow(hWnd, NativeMethods.SW_RESTORE);
-            var screen = Screen.PrimaryScreen!.WorkingArea;
-            _mainCanvas.CenterOn(world.X, world.Y, world.W, world.H, screen.Width, screen.Height);
-            _wm.Reproject();
-            _minimap.NotifyCanvasChanged();
-            NativeMethods.SetForegroundWindow(hWnd);
-            HideOverview();
+            GoToWindow(hWnd, world);
             e.Handled = true;
         }
     }
@@ -271,6 +305,7 @@ internal sealed class OverviewOverlay : Form
 
         _grid?.UpdateCamera(_camX, _camY, _zoom);
         UpdateThumbnails();
+        Invalidate();
     }
 
     private void OnMouseDown(object? sender, MouseEventArgs e)
@@ -366,6 +401,7 @@ internal sealed class OverviewOverlay : Form
 
         _grid?.UpdateCamera(_camX, _camY, _zoom);
         UpdateThumbnails();
+        Invalidate();
     }
 
     private void OnMouseClick(object? sender, MouseEventArgs e)
@@ -386,17 +422,7 @@ internal sealed class OverviewOverlay : Form
             if (wx >= world.X && wx <= world.X + world.W &&
                 wy >= world.Y && wy <= world.Y + world.H)
             {
-                // Restore if minimized
-                int style = NativeMethods.GetWindowLong(hWnd, NativeMethods.GWL_STYLE);
-                if ((style & (int)NativeMethods.WS_MINIMIZE) != 0)
-                    NativeMethods.ShowWindow(hWnd, NativeMethods.SW_RESTORE);
-
-                var screen = Screen.PrimaryScreen!.WorkingArea;
-                _mainCanvas.CenterOn(world.X, world.Y, world.W, world.H, screen.Width, screen.Height);
-                _wm.Reproject();
-                _minimap.NotifyCanvasChanged();
-                NativeMethods.SetForegroundWindow(hWnd);
-                HideOverview();
+                GoToWindow(hWnd, world);
                 return;
             }
         }
