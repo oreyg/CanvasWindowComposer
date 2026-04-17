@@ -91,6 +91,8 @@ internal sealed class TrayApp : ApplicationContext
             Visible = true
         };
 
+        _wm.Reproject();
+
         _mouseHook.Install();
 
         _winEventProc = OnWinEvent;
@@ -129,8 +131,6 @@ internal sealed class TrayApp : ApplicationContext
             _winEventProc,
             0, 0,
             NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
-
-        _wm.Reproject();
     }
 
     private void OnWinEvent(IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
