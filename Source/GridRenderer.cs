@@ -73,28 +73,20 @@ float gridLine(float coord, float spacing, float lineWidth)
     return 1.0 - smoothstep(lineWidth - aa, lineWidth + aa, d);
 }
 
-// Dotted pattern: returns 0 or 1 based on position along the line
-float dotPattern(float coord, float dotSpacing)
-{
-    return step(0.5, frac(coord / dotSpacing));
-}
-
 // Dashed pattern: returns 0 or 1
-float dashPattern(float coord, float dashLen)
+float dashPattern(float coord, float dashLen, float offset)
 {
-    return step(0.35, frac(coord / dashLen));
+    return step(0.5, frac((coord + offset) / dashLen));
 }
 
 // X mark at grid intersections: two diagonal lines crossing
 float xMark(float2 localPos, float size, float lineWidth)
 {
     float aa = fwidth(localPos.x) * 1.5;
-    // Two diagonals: |x-y| and |x+y|
     float d1 = abs(localPos.x - localPos.y);
     float d2 = abs(localPos.x + localPos.y);
     float line1 = 1.0 - smoothstep(lineWidth - aa, lineWidth + aa, d1);
     float line2 = 1.0 - smoothstep(lineWidth - aa, lineWidth + aa, d2);
-    // Only draw within the X's bounding box
     float mask = step(abs(localPos.x), size) * step(abs(localPos.y), size);
     return saturate(line1 + line2) * mask;
 }
@@ -107,24 +99,35 @@ float xGrid(float2 wp, float spacing, float xSize, float lineWidth)
     return xMark(localPos, xSize, lineWidth);
 }
 
-// Dashed grid for foreground
-float dashedGrid(float2 wp, float spacing, float lw, float patternScale)
+// Grid level of a line: coarsest spacing that aligns to this position.
+// Uses trailing zeros of the grid index to find which zoom level the line belongs to.
+float lineLevel(float coord, float spacing)
 {
-    float lineX = gridLine(wp.x, spacing, lw);
-    float lineY = gridLine(wp.y, spacing, lw);
-    float dashX = dashPattern(wp.y, patternScale);
-    float dashY = dashPattern(wp.x, patternScale);
-    return lineX * dashX + lineY * dashY;
+    uint n = (uint)abs(round(coord / spacing));
+    if (n == 0) return spacing * 32.0;
+    uint tz = min(firstbitlow(n), 5u);
+    return spacing * pow(2.0, (float)tz);
 }
 
-// Dotted grid for foreground
-float dottedGrid(float2 wp, float spacing, float lw, float patternScale)
+// Dashed grid — lineLevel affects brightness, not spacing
+float dashedGrid(float2 wp, float spacing, float lw, float z, int spMul)
 {
+    float logZ = log2(z * 100.0 / 80.0);
+    float blend = logZ - floor(logZ);
+    float ps = spacing * 0.03125 * pow(2.0, (float)spMul);
     float lineX = gridLine(wp.x, spacing, lw);
     float lineY = gridLine(wp.y, spacing, lw);
-    float dotX = dotPattern(wp.y, patternScale);
-    float dotY = dotPattern(wp.x, patternScale);
-    return lineX * dotX + lineY * dotY;
+    float dashX = dashPattern(wp.y, ps, ps * 0.25);
+    float dashY = dashPattern(wp.x, ps, ps * 0.25);
+    float lvlX = lineLevel(wp.x, spacing);
+    float lvlY = lineLevel(wp.y, spacing);
+    float tzX = log2(lvlX / spacing);
+    float tzY = log2(lvlY / spacing);
+    float fadeX = smoothstep(0.0, 0.4, blend + tzX * 0.2);
+    float fadeY = smoothstep(0.0, 0.4, blend + tzY * 0.2);
+    float brightX = 1.0 + tzX * 0.3;
+    float brightY = 1.0 + tzY * 0.3;
+    return lineX * dashX * fadeX * brightX + lineY * dashY * fadeY * brightY;
 }
 
 // === Nebula effect (from shadertoy.com/view/sdlyz8) ===
@@ -182,99 +185,80 @@ float4 PSMain(VSOut input) : SV_Target
 {
     float2 screenPos = input.uv * float2(screenW, screenH);
 
-    // === Parallax layers ===
-    float2 layer0 = screenPos / zoom + camPos;
-    float2 layer1 = screenPos / zoom + camPos * 0.6;
-    float2 layer2 = screenPos / zoom + camPos * 0.3;
+    // === World-space coordinate ===
+    float2 worldPos = screenPos / zoom + camPos;
 
-    // === Adaptive spacing ===
+    // === Adaptive grid spacing (doubles per zoom level) ===
     float logZoom = log2(zoom * 100.0 / 80.0);
-    float level = floor(logZoom);
-    float fade = logZoom - level;
+    float zoomLevel = floor(logZoom);
+    float levelBlend = logZoom - zoomLevel;
 
-    float baseSpacing = 100.0 * pow(2.0, -level);
-    float fineSpacing = baseSpacing * 0.5;
-    float majorSpacing = baseSpacing * 5.0;
+    float gridBase  = 100.0 * pow(2.0, -zoomLevel);
+    float gridMajor = gridBase * 5.0;
+    float gridSub   = gridMajor * 0.5;
 
-    float lw = 0.4 / zoom;
-    float xSize = 3.0 / zoom;
+    float lineWidth = 0.4 / zoom;
 
-    // === Solid line detection for each level (used for priority) ===
-    float minPx = dpiScale / zoom; // 1 physical pixel in world units
-    float originLw = max(0.15 / zoom, minPx * 0.5);
-    float onOriginX = gridLine(layer0.x, 1e6, originLw) * step(abs(layer0.x), originLw * 3.0);
-    float onOriginY = gridLine(layer0.y, 1e6, originLw) * step(abs(layer0.y), originLw * 3.0);
-    float onOrigin = saturate(onOriginX + onOriginY);
+    // === Line detection per grid tier (highest priority wins) ===
+    float minPx = dpiScale / zoom;
+    float originWidth = max(0.15 / zoom, minPx * 0.5);
 
-    float onMajorX = gridLine(layer0.x, majorSpacing, lw);
-    float onMajorY = gridLine(layer0.y, majorSpacing, lw);
-    float onMajor = saturate(onMajorX + onMajorY);
+    float origin = saturate(
+        gridLine(worldPos.x, 1e6, originWidth) * step(abs(worldPos.x), originWidth * 3.0) +
+        gridLine(worldPos.y, 1e6, originWidth) * step(abs(worldPos.y), originWidth * 3.0));
 
-    float onMajorFinerX = gridLine(layer0.x, majorSpacing * 0.5, lw * 0.8);
-    float onMajorFinerY = gridLine(layer0.y, majorSpacing * 0.5, lw * 0.8);
-    float onMajorFiner = saturate(onMajorFinerX + onMajorFinerY);
+    float major = saturate(
+        gridLine(worldPos.x, gridMajor, lineWidth) +
+        gridLine(worldPos.y, gridMajor, lineWidth));
 
-    float onFineX = gridLine(layer0.x, baseSpacing, lw * 0.7);
-    float onFineY = gridLine(layer0.y, baseSpacing, lw * 0.7);
-    float onFine = saturate(onFineX + onFineY);
+    float sub = saturate(
+        gridLine(worldPos.x, gridSub, lineWidth * 0.8) +
+        gridLine(worldPos.y, gridSub, lineWidth * 0.8));
 
-    float onFinerX = gridLine(layer0.x, fineSpacing, lw * 0.6);
-    float onFinerY = gridLine(layer0.y, fineSpacing, lw * 0.6);
-    float onFiner = saturate(onFinerX + onFinerY);
+    float brightness = smoothstep(0.02, 1.5, zoom);
 
-    // === Determine which level this pixel belongs to (highest wins) ===
-    float intensity = smoothstep(0.02, 1.5, zoom);
-
-    // Nebula background fades in at max zoom-out, scales with zoom
-    float nebulaBlend = smoothstep(0.15, 0.05, zoom);
-    // Screen UVs + slight camera offset — zoom doesnt scale it, only panning shifts it slowly
-    // Screen-fixed with slight pan parallax (zoom does not affect it)
+    // === Nebula background (screen-fixed, fades in at max zoom-out) ===
+    float nebulaBlend = smoothstep(0.7, 0.05, zoom);
     float2 nebulaUV = input.uv * float2(screenW / screenH, 1.0) - float2(panAccumX, panAccumY) * 0.000002;
-    float3 neb = nebula(nebulaUV, time);
-    float3 bg = lerp(float3(0.04, 0.045, 0.05), neb, nebulaBlend);
-    float3 color = bg;
+    float3 color = lerp(float3(0.04, 0.045, 0.05), nebula(nebulaUV, time), nebulaBlend);
 
-    // Background X marks (only where no foreground grid)
-    float deepSpacing = baseSpacing * 16.0;
-    float midSpacing = baseSpacing * 8.0;
+    // === Grid lines (exclusive priority chain — no overlaps) ===
+    if (origin > 0.01)
+    {
+        float glow = 0.5 + 0.5 * smoothstep(0.01, 0.5, zoom);
+        color = lerp(color, float3(0.4, 0.85, 1.0), origin * 0.8 * glow);
+    }
+    else if (major > 0.01)
+    {
+        float p = dashedGrid(worldPos, gridMajor, lineWidth * 0.8, zoom, 0);
+        color = lerp(color, float3(0.75, 0.85, 0.9), saturate(p) * 0.70 * brightness);
+    }
+    else if (sub > 0.01)
+    {
+        float p = dashedGrid(worldPos, gridSub, lineWidth * 0.6, zoom, 1);
+        color = lerp(color, float3(0.65, 0.75, 0.8), saturate(p) * 0.40 * brightness * levelBlend);
+    }
 
-    if (onOrigin > 0.01)
     {
-        // Origin — brightest, thin
-        float originI = 0.5 + 0.5 * smoothstep(0.01, 0.5, zoom);
-        color = lerp(color, float3(0.4, 0.85, 1.0), onOrigin * 0.8 * originI);
-    }
-    else if (onMajor > 0.01)
-    {
-        // Major dashed grid
-        float pattern = dashedGrid(layer0, majorSpacing, lw * 0.8, majorSpacing * 0.05);
-        color = lerp(color, float3(0.75, 0.85, 0.9), saturate(pattern) * 0.30 * intensity);
-    }
-    else if (onMajorFiner > 0.01)
-    {
-        // Major finer (fading in)
-        float pattern = dashedGrid(layer0, majorSpacing * 0.5, lw * 0.6, majorSpacing * 0.025);
-        color = lerp(color, float3(0.65, 0.75, 0.8), saturate(pattern) * 0.20 * intensity * fade);
-    }
-    else if (onFine > 0.01)
-    {
-        // Fine dotted grid
-        float pattern = dottedGrid(layer0, baseSpacing, lw * 0.6, baseSpacing * 0.06);
-        color = lerp(color, float3(0.7, 0.75, 0.8), saturate(pattern) * 0.18 * intensity);
-    }
-    else if (onFiner > 0.01)
-    {
-        // Finer dotted (fading in)
-        float pattern = dottedGrid(layer0, fineSpacing, lw * 0.5, fineSpacing * 0.06);
-        color = lerp(color, float3(0.6, 0.65, 0.7), saturate(pattern) * 0.12 * intensity * fade);
-    }
-    else
-    {
-        // Background X marks only where no grid lines exist
-        float deepX = xGrid(layer2, deepSpacing, xSize * 1.5, lw * 0.4);
-        float midX = xGrid(layer1, midSpacing, xSize * 1.2, lw * 0.4);
-        color = lerp(color, float3(0.15, 0.4, 0.45), saturate(deepX) * 0.15 * intensity);
-        color = lerp(color, float3(0.2, 0.45, 0.5), saturate(midX) * 0.13 * intensity);
+        // Decorative marks with pan-parallax
+        float2 pan = float2(panAccumX, panAccumY);
+        float spacing = 0.5;
+        float markSize = 0.012;
+        float msqrSize = 0.008;
+        float dotsSize = 0.0015;
+        float markWidth = 0.001;
+        float fade = saturate((zoom - 0.3) / 0.7);
+        float2 farPos = screenPos * 0.0015;
+        float2 markUV = farPos - pan * 0.0005;
+        float2 msqrUV = farPos - pan * 0.00045;
+        float2 dotsUV = farPos - pan * 0.0004;
+        float marks = xGrid(markUV,                 spacing,       markSize, markWidth);
+        float msqr  = xGrid(msqrUV + spacing * 0.5, spacing,       msqrSize, msqrSize);
+        float dots  = xGrid(dotsUV + spacing,       spacing * 0.5, dotsSize, dotsSize);
+
+        color = lerp(color, float3(0.0, 0.9, 1.0), saturate(marks) * 0.5 * fade);
+        color = lerp(color, float3(0.0, 0.7, 0.9), saturate(msqr) * 0.12 * fade);
+        color = lerp(color, float3(0.0, 0.9, 1.0), saturate(dots) * 0.24 * fade);
     }
 
     return float4(color, 1.0);
