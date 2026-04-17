@@ -21,6 +21,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="Tests\**" />
     <Content Include="icon.ico" />
   </ItemGroup>
 
