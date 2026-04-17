@@ -7,14 +7,14 @@ InstallDir "$PROGRAMFILES64\CanvasWindowComposer"
 RequestExecutionLevel admin
 
 ; --- Version info (shown in file properties) ---
-VIProductVersion "1.5.0.0"
-VIFileVersion "1.5.0.0"
+VIProductVersion "1.6.0.0"
+VIFileVersion "1.6.0.0"
 VIAddVersionKey "ProductName" "Canvas Window Composer"
 VIAddVersionKey "CompanyName" "Devnova"
 VIAddVersionKey "LegalCopyright" "Copyright (c) 2026 Devnova"
 VIAddVersionKey "FileDescription" "Canvas Window Composer Installer"
-VIAddVersionKey "FileVersion" "1.5.0"
-VIAddVersionKey "ProductVersion" "1.5.0"
+VIAddVersionKey "FileVersion" "1.6.0"
+VIAddVersionKey "ProductVersion" "1.6.0"
 
 ; --- UI ---
 !define MUI_ABORTWARNING
@@ -37,6 +37,16 @@ Section "Install"
     File "publish-fd\CanvasDesktop.deps.json"
     File "publish-fd\CanvasDesktop.runtimeconfig.json"
     File "publish-fd\DpiHook.dll"
+    File "publish-fd\SharpGen.Runtime.dll"
+    File "publish-fd\SharpGen.Runtime.COM.dll"
+    File "publish-fd\Vortice.D3DCompiler.dll"
+    File "publish-fd\Vortice.Direct3D11.dll"
+    File "publish-fd\Vortice.DirectX.dll"
+    File "publish-fd\Vortice.DXGI.dll"
+    File "publish-fd\Vortice.Mathematics.dll"
+    File "publish-fd\System.IO.Pipelines.dll"
+    File "publish-fd\System.Text.Encodings.Web.dll"
+    File "publish-fd\System.Text.Json.dll"
 
     ; Create uninstaller
     WriteUninstaller "$INSTDIR\Uninstall.exe"
@@ -54,7 +64,7 @@ Section "Install"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CanvasWindowComposer" "UninstallString" '"$INSTDIR\Uninstall.exe"'
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CanvasWindowComposer" "InstallLocation" "$INSTDIR"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CanvasWindowComposer" "Publisher" "Devnova"
-    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CanvasWindowComposer" "DisplayVersion" "1.5.0"
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CanvasWindowComposer" "DisplayVersion" "1.6.0"
     WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CanvasWindowComposer" "NoModify" 1
     WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CanvasWindowComposer" "NoRepair" 1
 SectionEnd
@@ -73,6 +83,16 @@ Section "Uninstall"
     Delete "$INSTDIR\CanvasDesktop.deps.json"
     Delete "$INSTDIR\CanvasDesktop.runtimeconfig.json"
     Delete "$INSTDIR\DpiHook.dll"
+    Delete "$INSTDIR\SharpGen.Runtime.dll"
+    Delete "$INSTDIR\SharpGen.Runtime.COM.dll"
+    Delete "$INSTDIR\Vortice.D3DCompiler.dll"
+    Delete "$INSTDIR\Vortice.Direct3D11.dll"
+    Delete "$INSTDIR\Vortice.DirectX.dll"
+    Delete "$INSTDIR\Vortice.DXGI.dll"
+    Delete "$INSTDIR\Vortice.Mathematics.dll"
+    Delete "$INSTDIR\System.IO.Pipelines.dll"
+    Delete "$INSTDIR\System.Text.Encodings.Web.dll"
+    Delete "$INSTDIR\System.Text.Json.dll"
     Delete "$INSTDIR\CanvasDesktop.pdb"
     Delete "$INSTDIR\canvas_debug.log"
     Delete "$INSTDIR\Uninstall.exe"

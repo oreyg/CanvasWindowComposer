@@ -235,7 +235,7 @@ float4 PSMain(VSOut input) : SV_Target
         gridLine(worldPos.x, gridSub, lineWidth * 0.8) +
         gridLine(worldPos.y, gridSub, lineWidth * 0.8));
 
-    float brightness = smoothstep(0.02, 1.5, zoom);
+    float brightness = smoothstep(0.005, 0.3, zoom);
 
     // === Nebula background (screen-fixed, fades in at max zoom-out) ===
     float nebulaBlend = smoothstep(0.7, 0.05, zoom);
@@ -243,21 +243,23 @@ float4 PSMain(VSOut input) : SV_Target
     float3 color = lerp(float3(0.04, 0.045, 0.05), nebula(nebulaUV, time), nebulaBlend);
 
     // === Grid lines (exclusive priority chain — no overlaps) ===
+    float3 gridGlow = float3(0, 0, 0);
     if (origin > 0.01)
     {
-        float glow = 0.5 + 0.5 * smoothstep(0.01, 0.5, zoom);
-        color = lerp(color, float3(0.4, 0.85, 1.0), origin * 0.8 * glow);
+        float g = 0.5 + 0.5 * smoothstep(0.01, 0.5, zoom);
+        gridGlow = float3(0.4, 0.85, 1.0) * origin * 0.8 * g;
     }
     else if (major > 0.01)
     {
         float p = dashedGrid(worldPos, gridMajor, lineWidth * 0.8, zoom, 0);
-        color = lerp(color, float3(0.75, 0.85, 0.9), saturate(p) * 0.70 * brightness);
+        gridGlow = float3(0.75, 0.85, 0.9) * saturate(p) * 0.70 * brightness;
     }
     else if (sub > 0.01)
     {
         float p = dashedGrid(worldPos, gridSub, lineWidth * 0.6, zoom, 1);
-        color = lerp(color, float3(0.65, 0.75, 0.8), saturate(p) * 0.40 * brightness * levelBlend);
+        gridGlow = float3(0.65, 0.75, 0.8) * saturate(p) * 0.40 * brightness * levelBlend;
     }
+    color += gridGlow;
 
     {
         // Decorative marks with pan-parallax
@@ -267,7 +269,8 @@ float4 PSMain(VSOut input) : SV_Target
         float msqrSize = 0.008;
         float dotsSize = 0.0015;
         float markWidth = 0.001;
-        float fade = saturate((zoom - 0.3) / 0.7);
+        float t = saturate((zoom - 0.4) / 0.4);
+        float fade = t * t;
         float2 farPos = screenPos * 0.0015;
         float2 markUV = farPos - pan * 0.0005;
         float2 msqrUV = farPos - pan * 0.00045;
@@ -276,9 +279,10 @@ float4 PSMain(VSOut input) : SV_Target
         float msqr  = xGrid(msqrUV + spacing * 0.5, spacing,       msqrSize, msqrSize);
         float dots  = xGrid(dotsUV + spacing,       spacing * 0.5, dotsSize, dotsSize);
 
-        color = lerp(color, float3(0.0, 0.9, 1.0), saturate(marks) * 0.5 * fade);
-        color = lerp(color, float3(0.0, 0.7, 0.9), saturate(msqr) * 0.12 * fade);
-        color = lerp(color, float3(0.0, 0.9, 1.0), saturate(dots) * 0.24 * fade);
+        float3 glow = float3(0.0, 0.9, 1.0) * saturate(marks) * 0.8
+                    + float3(0.0, 0.7, 0.9) * saturate(msqr) * 0.2
+                    + float3(0.0, 0.9, 1.0) * saturate(dots) * 0.4;
+        color += glow * fade;
     }
 
     return float4(color, 1.0);

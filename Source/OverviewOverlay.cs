@@ -22,7 +22,7 @@ internal sealed class OverviewOverlay : Form
     // Overview's own camera
     private double _camX, _camY, _zoom = 1.0;
     private const double ZoomMin = 0.05;
-    private const double ZoomMax = 1.2;
+    private const double ZoomMax = 1.0;
     private const double ZoomStep = 0.1;
 
     // DWM thumbnail handles
