@@ -30,7 +30,8 @@ internal sealed class GridRenderer : IDisposable
         public float ScreenW, ScreenH;
         public float Time;
         public float DpiScale;
-        public float _pad0;
+        public float PanAccumX, PanAccumY;
+        public float _pad0, _pad1;
     }
 
     private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
@@ -44,7 +45,9 @@ cbuffer GridCB : register(b0)
     float screenH;
     float time;
     float dpiScale;
-    float _pad;
+    float panAccumX;
+    float panAccumY;
+    float2 _pad;
 };
 
 struct VSOut
@@ -225,8 +228,8 @@ float4 PSMain(VSOut input) : SV_Target
     // Nebula background fades in at max zoom-out, scales with zoom
     float nebulaBlend = smoothstep(0.15, 0.05, zoom);
     // Screen UVs + slight camera offset — zoom doesnt scale it, only panning shifts it slowly
-    // Fixed to screen — distant skybox, unaffected by pan or zoom
-    float2 nebulaUV = input.uv * float2(screenW / screenH, 1.0);
+    // Screen-fixed with slight pan parallax (zoom does not affect it)
+    float2 nebulaUV = input.uv * float2(screenW / screenH, 1.0) - float2(panAccumX, panAccumY) * 0.000002;
     float3 neb = nebula(nebulaUV, time);
     float3 bg = lerp(float3(0.04, 0.045, 0.05), neb, nebulaBlend);
     float3 color = bg;
@@ -339,27 +342,101 @@ float4 PSMain(VSOut input) : SV_Target
     }
 
     private float _dpiScale = 1.0f;
+    private volatile bool _running;
+    private volatile bool _alive = true;
+    private readonly System.Threading.ManualResetEventSlim _wakeEvent = new(false);
+    private System.Threading.Thread? _renderThread;
+
+    // Camera state read by the render thread
+    private volatile float _renderCamX, _renderCamY, _renderZoom;
+    private float _panAccumX, _panAccumY; // only accumulates pan, not zoom-induced cam changes
 
     public void SetDpiScale(float scale) => _dpiScale = scale;
 
+    /// <summary>Accumulate pan movement (not zoom). Drives nebula parallax.</summary>
+    public void AccumulatePan(double dx, double dy)
+    {
+        _panAccumX += (float)dx;
+        _panAccumY += (float)dy;
+    }
+
+    /// <summary>Render a single frame synchronously (legacy API).</summary>
     public void Render(double camX, double camY, double zoom)
+    {
+        _renderCamX = (float)camX;
+        _renderCamY = (float)camY;
+        _renderZoom = (float)zoom;
+        RenderFrame();
+    }
+
+    /// <summary>Start the render loop (wakes the suspended thread).</summary>
+    public void Start(double camX, double camY, double zoom)
+    {
+        _renderCamX = (float)camX;
+        _renderCamY = (float)camY;
+        _renderZoom = (float)zoom;
+        _running = true;
+        _wakeEvent.Set();
+    }
+
+    /// <summary>Update camera for next frame (call from any thread).</summary>
+    public void UpdateCamera(double camX, double camY, double zoom)
+    {
+        _renderCamX = (float)camX;
+        _renderCamY = (float)camY;
+        _renderZoom = (float)zoom;
+    }
+
+    /// <summary>Stop rendering and go back to sleep.</summary>
+    public void Stop()
+    {
+        _running = false;
+    }
+
+    /// <summary>Start the background thread (call once after Initialize).</summary>
+    public void StartThread()
+    {
+        _renderThread = new System.Threading.Thread(RenderLoop)
+        {
+            IsBackground = true,
+            Name = "GridRenderer"
+        };
+        _renderThread.Start();
+    }
+
+    private void RenderLoop()
+    {
+        while (_alive)
+        {
+            _wakeEvent.Wait(); // sleep until Start() signals
+
+            while (_running && _alive)
+            {
+                RenderFrame();
+                // Present(1) inside RenderFrame waits for VSync
+            }
+
+            _wakeEvent.Reset(); // go back to sleep
+        }
+    }
+
+    private void RenderFrame()
     {
         if (_context == null || _swapChain == null) return;
 
-        // Update constants
         var mapped = _context.Map(_constantBuffer!, MapMode.WriteDiscard);
         var constants = new GridConstants
         {
-            CamX = (float)camX, CamY = (float)camY,
-            Zoom = (float)zoom,
+            CamX = _renderCamX, CamY = _renderCamY,
+            Zoom = _renderZoom,
             ScreenW = _width, ScreenH = _height,
             Time = (float)_clock.Elapsed.TotalSeconds,
-            DpiScale = _dpiScale
+            DpiScale = _dpiScale,
+            PanAccumX = _panAccumX, PanAccumY = _panAccumY
         };
         Marshal.StructureToPtr(constants, mapped.DataPointer, false);
         _context.Unmap(_constantBuffer!);
 
-        // Render
         _context.OMSetRenderTargets(_rtv!);
         _context.RSSetViewport(0, 0, _width, _height);
         _context.VSSetShader(_vertexShader);
@@ -368,11 +445,17 @@ float4 PSMain(VSOut input) : SV_Target
         _context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
         _context.Draw(3, 0);
 
-        _swapChain.Present(1, PresentFlags.None); // VSync — pace to display refresh
+        _swapChain.Present(1, PresentFlags.None);
     }
 
     public void Dispose()
     {
+        _alive = false;
+        _running = false;
+        _wakeEvent.Set(); // wake to exit
+        _renderThread?.Join(1000);
+        _wakeEvent.Dispose();
+
         _rtv?.Dispose();
         _constantBuffer?.Dispose();
         _pixelShader?.Dispose();

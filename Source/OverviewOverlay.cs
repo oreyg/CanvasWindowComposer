@@ -34,10 +34,6 @@ internal sealed class OverviewOverlay : Form
     private int _dragIndex = -1;
     private Point _dragWindowStart;
 
-    // Render thread
-    private System.Threading.Thread? _renderThread;
-    private volatile bool _renderRunning;
-
     protected override CreateParams CreateParams
     {
         get
@@ -85,15 +81,20 @@ internal sealed class OverviewOverlay : Form
         Location = new Point(screen.X, screen.Y);
         Size = new Size(screen.Width, screen.Height);
 
-        // Initialize D3D11 grid renderer
-        _grid?.Dispose();
-        _grid = new GridRenderer();
-        _grid.Initialize(Handle, screen.Width, screen.Height);
-        using (var g = CreateGraphics())
-            _grid.SetDpiScale(g.DpiX / 96f);
+        // Initialize grid once (needs HWND), thread persists
+        if (_grid == null)
+        {
+            _grid = new GridRenderer();
+            _grid.Initialize(Handle, screen.Width, screen.Height);
+            using (var g = CreateGraphics())
+                _grid.SetDpiScale(g.DpiX / 96f);
+            _grid.StartThread();
+        }
 
-        // Fit camera to world extents
-        FitToExtents(screen.Width, screen.Height);
+        // Start from current canvas camera
+        _camX = _mainCanvas.CamX;
+        _camY = _mainCanvas.CamY;
+        _zoom = _mainCanvas.Zoom;
 
         // Unclip all windows so DWM thumbnails can render their content
         _wm.SuspendGreedyDraw = true;
@@ -106,23 +107,13 @@ internal sealed class OverviewOverlay : Form
         Show();
         Activate();
 
-        // Start render thread — DwmFlush/VSync paced
-        _renderRunning = true;
-        _renderThread = new System.Threading.Thread(RenderLoop)
-        {
-            IsBackground = true,
-            Name = "OverviewRender"
-        };
-        _renderThread.Start();
+        // Wake the grid render thread
+        _grid.Start(_camX, _camY, _zoom);
     }
 
     private void HideOverview()
     {
-        _renderRunning = false;
-        _renderThread?.Join(1000);
-        _renderThread = null;
-        _grid?.Dispose();
-        _grid = null;
+        _grid?.Stop();
         UnregisterThumbnails();
 
         // Re-enable greedy draw and re-clip off-screen windows
@@ -218,17 +209,6 @@ internal sealed class OverviewOverlay : Form
         }
     }
 
-    // ==================== RENDER THREAD ====================
-
-    private void RenderLoop()
-    {
-        while (_renderRunning)
-        {
-            _grid?.Render(_camX, _camY, _zoom);
-            // Present(1) inside Render waits for VSync — natural pacing
-        }
-    }
-
     // ==================== INPUT ====================
 
     private void OnKeyDown(object? sender, KeyEventArgs e)
@@ -299,6 +279,8 @@ internal sealed class OverviewOverlay : Form
             _camX -= dx / _zoom;
             _camY -= dy / _zoom;
 
+            _grid?.AccumulatePan(dx / _zoom, dy / _zoom);
+            _grid?.UpdateCamera(_camX, _camY, _zoom);
             UpdateThumbnails();
         }
     }
@@ -329,7 +311,7 @@ internal sealed class OverviewOverlay : Form
         _camX = worldX - e.X / _zoom;
         _camY = worldY - e.Y / _zoom;
 
-        _grid?.Render(_camX, _camY, _zoom);
+        _grid?.UpdateCamera(_camX, _camY, _zoom);
         UpdateThumbnails();
     }
 
@@ -368,6 +350,10 @@ internal sealed class OverviewOverlay : Form
         {
             e.Cancel = true;
             HideOverview();
+            return;
         }
+
+        _grid?.Dispose();
+        _grid = null;
     }
 }
