@@ -29,11 +29,8 @@ internal sealed class MouseHook : IDisposable
     private IntPtr _notifyHwnd;
     // Uses MessageWindow.WM_CANVAS_INPUT
 
-    // Accumulated zoom scroll (written by hook, read by UI thread)
-    private int _pendingZoomDelta;
-    private volatile int _zoomCenterX;
-    private volatile int _zoomCenterY;
-    private volatile bool _hasZoomPending;
+    // Alt+scroll triggers zoom (overview map)
+    private volatile bool _zoomPending;
 
     public bool Enabled { get; set; } = true;
 
@@ -96,23 +93,12 @@ internal sealed class MouseHook : IDisposable
         return true;
     }
 
-    /// <summary>
-    /// Drain accumulated zoom scroll delta (called by UI-thread timer).
-    /// scrollDelta is in units of WHEEL_DELTA (120 = one notch).
-    /// </summary>
-    public bool TryDrainZoom(out int scrollDelta, out int centerX, out int centerY)
+    /// <summary>Check and clear the overview toggle flag (triggered by Alt+scroll).</summary>
+    public bool TryDrainZoom()
     {
-        if (!_hasZoomPending)
-        {
-            scrollDelta = centerX = centerY = 0;
-            return false;
-        }
-
-        scrollDelta = Interlocked.Exchange(ref _pendingZoomDelta, 0);
-        centerX = _zoomCenterX;
-        centerY = _zoomCenterY;
-        _hasZoomPending = false;
-        return scrollDelta != 0;
+        if (!_zoomPending) return false;
+        _zoomPending = false;
+        return true;
     }
 
     public bool IsDragging => _dragging;
@@ -179,20 +165,14 @@ internal sealed class MouseHook : IDisposable
                     break;
 
                 case NativeMethods.WM_MOUSEWHEEL:
-                    if (!AppConfig.DisableZoom)
                     {
-                        // Alt+ScrollWheel on desktop = zoom
+                        // Alt+ScrollWheel = toggle overview map
                         bool alt = IsAltDown() && !IsCtrlDown() && !IsShiftDown();
                         if (alt && IsDesktopOrTaskbarAt(hookStruct.pt))
                         {
-                            // mouseData high word = scroll delta (positive = scroll up = zoom in)
-                            int delta = (short)(hookStruct.mouseData >> 16);
-                            Interlocked.Add(ref _pendingZoomDelta, delta);
-                            _zoomCenterX = hookStruct.pt.X;
-                            _zoomCenterY = hookStruct.pt.Y;
-                            _hasZoomPending = true;
+                            _zoomPending = true;
                             NotifyInput();
-                            return (IntPtr)1; // consume to prevent other scroll behavior
+                            return (IntPtr)1; // consume
                         }
                     }
                     break;

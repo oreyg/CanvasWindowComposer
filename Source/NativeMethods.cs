@@ -61,6 +61,7 @@ internal static class NativeMethods
     public const uint SWP_NOMOVE = 0x0002;
     public const uint SWP_NOZORDER = 0x0004;
     public const uint SWP_NOACTIVATE = 0x0010;
+    public const uint SWP_NOSENDCHANGING = 0x0400;
     public const uint SWP_ASYNCWINDOWPOS = 0x4000;
 
     // --- GetAncestor flags ---

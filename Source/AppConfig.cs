@@ -16,11 +16,10 @@ internal sealed class AppConfig
 
     private static readonly string ConfigPath = Path.Combine(ConfigDir, "config.ini");
 
-    public static bool DisableZoom { get; private set; }
-    public static bool DisableDpiZoom { get; private set; }
     public static bool DisableSearch { get; private set; }
     public static bool DisableAltPan { get; private set; }
     public static bool DisableGreedyDraw { get; private set; }
+    public static bool DisableDllInjection { get; private set; }
 
     public static void Load()
     {
@@ -33,11 +32,10 @@ internal sealed class AppConfig
 
         var values = ParseIni(ConfigPath);
 
-        DisableZoom = GetBool(values, "DisableZoom");
-        DisableDpiZoom = GetBool(values, "DisableDpiZoom");
         DisableSearch = GetBool(values, "DisableSearch");
         DisableAltPan = GetBool(values, "DisableAltPan");
         DisableGreedyDraw = GetBool(values, "DisableGreedyDraw");
+        DisableDllInjection = GetBool(values, "DisableDllInjection");
     }
 
     private static void WriteDefault()
@@ -46,12 +44,6 @@ internal sealed class AppConfig
         File.WriteAllText(ConfigPath,
 @"[CanvasWindowComposer]
 ; Set to true to disable features
-
-; Disable Alt+scroll zoom
-DisableZoom=false
-
-; Disable DPI content scaling
-DisableDpiZoom=false
 
 ; Disable Alt+S window search
 DisableSearch=false
@@ -62,6 +54,9 @@ DisableAltPan=false
 ; Disable SetWindowRgn clipping for off-screen windows
 ; Retains Alt-Tab and taskbar thumbnails at expense of performance
 DisableGreedyDraw=false
+
+; Disable DLL injection into managed windows
+DisableDllInjection=false
 ");
     }
 

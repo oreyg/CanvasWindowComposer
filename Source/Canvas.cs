@@ -22,9 +22,6 @@ internal sealed class Canvas
 {
     private double _camX, _camY;
     private double _zoom = 1.0;
-    private const double ZoomMin = 0.3;
-    private const double ZoomMax = 3.0;
-    private const double ZoomStep = 0.08;
 
     private readonly Dictionary<IntPtr, WorldRect> _windows = new();
 
@@ -32,8 +29,6 @@ internal sealed class Canvas
     public double CamY => _camY;
     public double Zoom => _zoom;
     public IReadOnlyDictionary<IntPtr, WorldRect> Windows => _windows;
-    public bool IsTransformed => Math.Abs(_zoom - 1.0) > 0.001 || Math.Abs(_camX) > 0.5 || Math.Abs(_camY) > 0.5;
-
     // ==================== PROJECTIONS ====================
 
     public (int x, int y) WorldToScreen(double wx, double wy)
@@ -71,20 +66,6 @@ internal sealed class Canvas
     {
         _camX -= screenDx / _zoom;
         _camY -= screenDy / _zoom;
-    }
-
-    public void ZoomAt(int scrollDelta, int screenCx, int screenCy)
-    {
-        double notches = scrollDelta / 120.0;
-        double newZoom = Math.Clamp(_zoom + notches * ZoomStep, ZoomMin, ZoomMax);
-
-        if (Math.Abs(newZoom - _zoom) < 0.001)
-            return;
-
-        var (worldX, worldY) = ScreenToWorld(screenCx, screenCy);
-        _zoom = newZoom;
-        _camX = worldX - screenCx / _zoom;
-        _camY = worldY - screenCy / _zoom;
     }
 
     /// <summary>Center the camera on a world-space rectangle.</summary>

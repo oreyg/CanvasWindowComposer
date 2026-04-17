@@ -314,7 +314,7 @@ internal sealed class SearchOverlay : Form
 
         var screen = Screen.PrimaryScreen!.WorkingArea;
         _canvas.CenterOn(world.X, world.Y, world.W, world.H, screen.Width, screen.Height);
-        _wm.Reproject(updateDpi: true);
+        _wm.Reproject();
         _minimap.NotifyCanvasChanged();
         HideOverlay();
     }

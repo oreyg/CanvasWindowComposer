@@ -78,12 +78,6 @@ internal sealed class MinimapOverlay : Form
     /// <summary>Call when the canvas changes. Shows the minimap and resets the fade timer.</summary>
     public void NotifyCanvasChanged()
     {
-        if (!_canvas.IsTransformed)
-        {
-            if (Visible) Hide();
-            return;
-        }
-
         PositionOnScreen();
         if (!Visible) Show();
         Invalidate();

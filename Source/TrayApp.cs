@@ -13,7 +13,6 @@ internal sealed class TrayApp : ApplicationContext
     private readonly InertiaEngine _inertia;
     private readonly Timer _bgTimer; // reconcile, VD polling
     private readonly MessageWindow _msgWindow;
-    private readonly ZoomSharedMemory _sharedMem;
     private readonly DllInjector _injector;
     private readonly Canvas _canvas;
     private readonly WindowManager _wm;
@@ -24,8 +23,9 @@ internal sealed class TrayApp : ApplicationContext
     private readonly SearchOverlay _search;
     private readonly OverviewOverlay _overview;
     private bool _enabled = true;
-    private const long ForegroundSuppressionMs = 100; // ignore focus events shortly after minimize/close
+    private const long ForegroundSuppressionMs = 500; // ignore focus events shortly after minimize/close/overlay
     private long _lastWindowLostTick;
+    private long _lastOverlayClosedTick;
     private IntPtr _winEventHook_System_Minimize;
     private IntPtr _winEventHook_Object_Destroy;
     private IntPtr _winEventHook_System_Foreground;
@@ -37,15 +37,16 @@ internal sealed class TrayApp : ApplicationContext
     {
         AppConfig.Load();
         AppConfig.StartObservingChanges();
-        _sharedMem = new ZoomSharedMemory();
+        GridRenderer.CompileShaders();
         _injector = new DllInjector();
         _vds = new VirtualDesktopService();
         _lastDesktopId = _vds.CurrentDesktopId;
         _canvas = new Canvas();
-        _wm = new WindowManager(_canvas, _injector, _sharedMem, _vds);
+        _wm = new WindowManager(_canvas, _injector, _vds);
         _minimap = new MinimapOverlay(_canvas);
         _search = new SearchOverlay(_canvas, _wm, _minimap);
         _overview = new OverviewOverlay(_canvas, _wm, _minimap);
+        _overview.OverviewClosed += () => _lastOverlayClosedTick = Environment.TickCount64;
         _inertia = new InertiaEngine(_canvas, _wm);
         _inertia.SetMinimap(_minimap);
         _inertia.SetUiControl(_minimap);
@@ -70,7 +71,6 @@ internal sealed class TrayApp : ApplicationContext
         _bgTimer.Start();
 
         var toggleItem = new ToolStripMenuItem("Enabled", null, OnToggle) { Checked = true };
-        var resetZoomItem = new ToolStripMenuItem("Reset Zoom", null, (_, _) => _wm.Reset());
         var openConfigItem = new ToolStripMenuItem("Open Config Directory", null,
             (_, _) => System.Diagnostics.Process.Start("explorer.exe", AppConfig.ConfigDir));
         var exitItem = new ToolStripMenuItem("Exit", null, OnExit);
@@ -79,7 +79,6 @@ internal sealed class TrayApp : ApplicationContext
         menu.Items.Add(new ToolStripLabel("Canvas Desktop") { Font = new Font("Segoe UI", 9, FontStyle.Bold) });
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(toggleItem);
-        menu.Items.Add(resetZoomItem);
         menu.Items.Add(openConfigItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(exitItem);
@@ -130,13 +129,13 @@ internal sealed class TrayApp : ApplicationContext
             _winEventProc,
             0, 0,
             NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
+
+        _wm.Reproject();
     }
 
     private void OnWinEvent(IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
         int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
     {
-        if (!_canvas.IsTransformed) return;
-
         switch (eventType)
         {
             case NativeMethods.EVENT_SYSTEM_MINIMIZESTART:
@@ -164,7 +163,9 @@ internal sealed class TrayApp : ApplicationContext
                 // Window got focus — if it's off-screen, center camera on it.
                 // Skip if a window was just minimized — the OS is auto-focusing
                 // the next window in Z-order, not the user switching.
-                if (Environment.TickCount64 - _lastWindowLostTick < ForegroundSuppressionMs)
+                long now = Environment.TickCount64;
+                if (now - _lastWindowLostTick < ForegroundSuppressionMs ||
+                    now - _lastOverlayClosedTick < ForegroundSuppressionMs)
                     break;
 
                 if (_canvas.HasWindow(hwnd))
@@ -174,7 +175,7 @@ internal sealed class TrayApp : ApplicationContext
                     {
                         var world = _canvas.Windows[hwnd];
                         _canvas.CenterOn(world.X, world.Y, world.W, world.H, screen.Width, screen.Height);
-                        _wm.Reproject(updateDpi: true);
+                        _wm.Reproject();
                         _minimap.NotifyCanvasChanged();
                     }
                 }
@@ -192,7 +193,6 @@ internal sealed class TrayApp : ApplicationContext
     private void OnCanvasInput()
     {
         bool moved = false;
-        bool zoomed = false;
 
         if (_mouseHook.TryDrainDelta(out int dx, out int dy))
         {
@@ -204,18 +204,12 @@ internal sealed class TrayApp : ApplicationContext
         if (_mouseHook.TryDrainDragEnded())
             _inertia.Release();
 
-        if (_mouseHook.TryDrainZoom(out int scrollDelta, out int cx, out int cy))
-        {
-            _inertia.Cancel();
-            _wm.Reconcile();
-            _canvas.ZoomAt(scrollDelta, cx, cy);
-            moved = true;
-            zoomed = true;
-        }
+        if (_mouseHook.TryDrainZoom())
+            _overview.Toggle();
 
         if (moved)
         {
-            _wm.Reproject(updateDpi: zoomed);
+            _wm.Reproject();
             _minimap.NotifyCanvasChanged();
         }
     }
@@ -226,11 +220,8 @@ internal sealed class TrayApp : ApplicationContext
         if (_vds.CheckDesktopChanged())
             OnDesktopSwitched();
 
-        if (_canvas.IsTransformed)
-        {
-            _wm.Reconcile();
-            _wm.RemoveStale();
-        }
+        _wm.Reconcile();
+        _wm.RemoveStale();
     }
 
     private void OnDesktopSwitched()
@@ -254,7 +245,7 @@ internal sealed class TrayApp : ApplicationContext
             _canvas.LoadState(state);
 
         // Always reproject to discover windows and apply state
-        _wm.Reproject(updateDpi: true);
+        _wm.Reproject();
         _minimap.ShowBriefly();
     }
 
@@ -297,7 +288,6 @@ internal sealed class TrayApp : ApplicationContext
         _search.Close();
         _minimap.Close();
         _vds.Dispose();
-        _sharedMem.Dispose();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
         Application.Exit();

@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Runtime.InteropServices;
 using System.Text;
 
 namespace CanvasDesktop;
@@ -13,9 +12,7 @@ internal sealed class WindowManager
 {
     private readonly Canvas _canvas;
     private readonly DllInjector _injector;
-    private readonly ZoomSharedMemory _sharedMem;
     private readonly VirtualDesktopService? _vds;
-    private uint _baseDpi = 96;
 
     // Track last projected screen positions to detect manual moves
     private readonly Dictionary<IntPtr, (int x, int y, int w, int h)> _lastScreen = new();
@@ -26,37 +23,27 @@ internal sealed class WindowManager
     // Temporarily suspends greedy draw (SetWindowRgn clipping)
     public bool SuspendGreedyDraw { get; set; }
 
-    public WindowManager(Canvas canvas, DllInjector injector, ZoomSharedMemory sharedMem,
-        VirtualDesktopService? vds = null)
+    public WindowManager(Canvas canvas, DllInjector injector, VirtualDesktopService? vds = null)
     {
         _canvas = canvas;
         _injector = injector;
-        _sharedMem = sharedMem;
         _vds = vds;
     }
 
     /// <summary>
-    /// Project all canvas windows to screen. Call after Pan/ZoomAt.
+    /// Project all canvas windows to screen. Call after Pan.
     /// </summary>
-    public void Reproject(bool updateDpi = false)
+    public void Reproject()
     {
         DiscoverNewWindows();
 
-        bool isZoomed = Math.Abs(_canvas.Zoom - 1.0) > 0.001;
-
-        if (!AppConfig.DisableDpiZoom && updateDpi && isZoomed)
-            _sharedMem.WriteScale(_canvas.Zoom);
-
-        // Build batch for all visible windows
         var batch = new List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)>();
-        var dpiWindows = (updateDpi && isZoomed) ? new List<IntPtr>() : null;
 
         foreach (var (hWnd, world) in _canvas.Windows)
         {
             if (!IsWindowActive(hWnd))
                 continue;
 
-            // Skip maximized/fullscreen windows — they shouldn't move
             int style = NativeMethods.GetWindowLong(hWnd, NativeMethods.GWL_STYLE);
             if ((style & (int)NativeMethods.WS_MAXIMIZE) != 0)
                 continue;
@@ -65,8 +52,6 @@ internal sealed class WindowManager
             var (sw, sh) = _canvas.WorldToScreenSize(world.W, world.H);
             bool onScreen = IsOnAnyScreen(sx, sy, sw, sh);
 
-            // Clip off-screen windows to an empty region so they render
-            // nothing but stay positioned — prevents apps from fighting back.
             bool wasClipped = _clippedWindows.Contains(hWnd);
             if (!AppConfig.DisableGreedyDraw && !SuspendGreedyDraw && !onScreen)
             {
@@ -87,51 +72,11 @@ internal sealed class WindowManager
                 _clippedWindows.Remove(hWnd);
             }
 
-            // Position-only during pan (no zoom) — avoids triggering
-            // layout recalculation in apps like Firefox
-            bool posOnly = !updateDpi;
-            batch.Add((hWnd, sx, sy, sw, sh, posOnly));
+            batch.Add((hWnd, sx, sy, sw, sh, true));
             _lastScreen[hWnd] = (sx, sy, sw, sh);
-
-            if (dpiWindows != null && IsDpiAdaptive(hWnd))
-            {
-                InjectDpiHook(hWnd);
-                dpiWindows.Add(hWnd);
-            }
-        }
-
-        // Send DPI changed before positioning so windows re-render
-        // at the correct size before being moved
-        if (!AppConfig.DisableDpiZoom && dpiWindows is { Count: > 0 })
-        {
-            uint virtualDpi = (uint)(_baseDpi * _canvas.Zoom + 0.5);
-            SendDpiChanged(dpiWindows, virtualDpi);
         }
 
         BatchSetPositions(batch);
-    }
-
-    /// <summary>
-    /// Re-send WM_DPICHANGED to all DPI-adaptive windows at current zoom.
-    /// Call once at the start of panning while zoomed, so windows re-render
-    /// for their current size before being moved.
-    /// </summary>
-    public void RefreshDpi()
-    {
-        if (Math.Abs(_canvas.Zoom - 1.0) <= 0.001) return;
-
-        var dpiWindows = new List<IntPtr>();
-        foreach (var (hWnd, _) in _canvas.Windows)
-        {
-            if (IsWindowActive(hWnd) && IsDpiAdaptive(hWnd))
-                dpiWindows.Add(hWnd);
-        }
-
-        if (dpiWindows.Count > 0)
-        {
-            uint virtualDpi = (uint)(_baseDpi * _canvas.Zoom + 0.5);
-            SendDpiChanged(dpiWindows, virtualDpi);
-        }
     }
 
     /// <summary>
@@ -152,17 +97,6 @@ internal sealed class WindowManager
             NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
 
         _lastScreen[hWnd] = (sx, sy, sw, sh);
-
-        bool isZoomed = Math.Abs(_canvas.Zoom - 1.0) > 0.001;
-        if (isZoomed && IsDpiAdaptive(hWnd))
-        {
-            InjectDpiHook(hWnd);
-            if (!AppConfig.DisableDpiZoom)
-            {
-                uint virtualDpi = (uint)(_baseDpi * _canvas.Zoom + 0.5);
-                SendDpiChanged(new List<IntPtr> { hWnd }, virtualDpi);
-            }
-        }
     }
 
     /// <summary>
@@ -244,26 +178,24 @@ internal sealed class WindowManager
         _canvas.SetWindowFromScreen(hWnd, sx, sy, sw, sh);
         _lastScreen[hWnd] = (sx, sy, sw, sh);
 
-        if (_baseDpi == 96)
+        if (!AppConfig.DisableDllInjection)
         {
-            uint dpi = NativeMethods.GetDpiForWindow(hWnd);
-            if (dpi > 0) _baseDpi = dpi;
+            NativeMethods.GetWindowThreadProcessId(hWnd, out uint pid);
+            if (!_injector.IsInjected(pid))
+                _injector.Inject(pid);
         }
     }
 
-    /// <summary>Reset: restore all windows to world positions, eject hooks, clear canvas.</summary>
+    /// <summary>Reset: restore all windows to world positions, clear canvas.</summary>
     public void Reset()
     {
-        // Restore clipped windows
         foreach (var hWnd in _clippedWindows)
             NativeMethods.SetWindowRgn(hWnd, IntPtr.Zero, true);
         _clippedWindows.Clear();
 
         _canvas.ResetCamera();
-        _sharedMem.WriteScale(1.0);
 
         var batch = new List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)>();
-        var dpiWindows = new List<IntPtr>();
 
         foreach (var (hWnd, world) in _canvas.Windows)
         {
@@ -274,16 +206,9 @@ internal sealed class WindowManager
             int sw = (int)world.W, sh = (int)world.H;
 
             batch.Add((hWnd, sx, sy, sw, sh, false));
-            dpiWindows.Add(hWnd);
         }
 
         BatchSetPositions(batch);
-
-        // Eject hooks FIRST so DPI queries return real values,
-        // THEN send WM_DPICHANGED to trigger re-render at real DPI.
-        _injector.EjectAll();
-        ResetDpi(dpiWindows);
-        ForceRepaint(dpiWindows);
 
         _canvas.ClearWindows();
         _lastScreen.Clear();
@@ -367,117 +292,6 @@ internal sealed class WindowManager
         return false;
     }
 
-    private static void ForceRepaint(List<IntPtr> windows)
-    {
-        const uint flags = NativeMethods.RDW_INVALIDATE | NativeMethods.RDW_UPDATENOW | NativeMethods.RDW_ALLCHILDREN;
-        foreach (var hWnd in windows)
-            NativeMethods.RedrawWindow(hWnd, IntPtr.Zero, IntPtr.Zero, flags);
-    }
-
-    // System processes whose DPI should never be hooked.
-    // Injection is process-wide, so hooking explorer.exe would break
-    // Alt-Tab, taskbar, Start menu, etc.
-    private static readonly HashSet<string> BlockedProcesses = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "dwm",
-        "ShellExperienceHost",
-        "SearchHost",
-        "SearchUI",
-        "StartMenuExperienceHost",
-        "ApplicationFrameHost",
-        "SystemSettings",
-        "TextInputHost",
-        "LockApp",
-        "LogiOverlay",
-        "ctfmon",
-    };
-
-    private readonly HashSet<uint> _blockedPids = new();
-
-    private void InjectDpiHook(IntPtr hWnd)
-    {
-        if (!_injector.DllExists) return;
-
-        NativeMethods.GetWindowThreadProcessId(hWnd, out uint pid);
-
-        // Check cached blocklist first
-        if (_blockedPids.Contains(pid)) return;
-        if (_injector.IsInjected(pid)) return;
-
-        // Check process name against blocklist
-        try
-        {
-            using var proc = System.Diagnostics.Process.GetProcessById((int)pid);
-            string name = proc.ProcessName;
-
-            if (BlockedProcesses.Contains(name) || IsSystemProcess(proc))
-            {
-                _blockedPids.Add(pid);
-                return;
-            }
-        }
-        catch
-        {
-            // Process may have exited
-            return;
-        }
-
-        _injector.Inject(pid);
-    }
-
-    /// <summary>
-    /// Check if a process is a system process (running from Windows directory).
-    /// </summary>
-    private static bool IsSystemProcess(System.Diagnostics.Process proc)
-    {
-        try
-        {
-            string? path = proc.MainModule?.FileName;
-            if (path == null) return true;
-
-            string winDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-            return path.StartsWith(winDir, StringComparison.OrdinalIgnoreCase);
-        }
-        catch
-        {
-            // Can't access MainModule (elevated/protected process) — skip it
-            return true;
-        }
-    }
-
-    private static bool IsDpiAdaptive(IntPtr hWnd)
-    {
-        IntPtr ctx = NativeMethods.GetWindowDpiAwarenessContext(hWnd);
-        if (ctx == IntPtr.Zero) return false;
-        int awareness = NativeMethods.GetAwarenessFromDpiAwarenessContext(ctx);
-        return awareness >= NativeMethods.DPI_AWARENESS_SYSTEM_AWARE;
-    }
-
-    private void ResetDpi(List<IntPtr> windows)
-    {
-        SendDpiChanged(windows, _baseDpi);
-    }
-
-    private static void SendDpiChanged(List<IntPtr> windows, uint dpi)
-    {
-        IntPtr wParam = (IntPtr)((dpi & 0xFFFF) | (dpi << 16));
-
-        foreach (var hWnd in windows)
-        {
-            NativeMethods.GetWindowRect(hWnd, out var rect);
-            IntPtr lParam = Marshal.AllocHGlobal(Marshal.SizeOf<NativeMethods.RECT>());
-            try
-            {
-                Marshal.StructureToPtr(rect, lParam, false);
-                NativeMethods.SendMessage(hWnd, NativeMethods.WM_DPICHANGED, wParam, lParam);
-            }
-            finally
-            {
-                Marshal.FreeHGlobal(lParam);
-            }
-        }
-    }
-
     // ==================== WINDOW FILTERING & BATCH ====================
 
     private static readonly HashSet<string> ExcludedClasses = new()
@@ -541,7 +355,7 @@ internal sealed class WindowManager
 
         foreach (var (hWnd, x, y, w, h, posOnly) in items)
         {
-            uint flags = NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE;
+            uint flags = NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOSENDCHANGING;
             if (posOnly) flags |= NativeMethods.SWP_NOSIZE;
 
             if (useBatch)

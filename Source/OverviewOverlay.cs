@@ -16,10 +16,13 @@ internal sealed class OverviewOverlay : Form
     private readonly MinimapOverlay _minimap;
     private GridRenderer? _grid;
 
+    /// <summary>Raised when the overview is hidden (for foreground suppression).</summary>
+    public event Action? OverviewClosed;
+
     // Overview's own camera
     private double _camX, _camY, _zoom = 1.0;
     private const double ZoomMin = 0.05;
-    private const double ZoomMax = 2.0;
+    private const double ZoomMax = 1.2;
     private const double ZoomStep = 0.1;
 
     // DWM thumbnail handles
@@ -28,6 +31,9 @@ internal sealed class OverviewOverlay : Form
     // Pan state
     private bool _panning;
     private Point _panStart;
+
+    // Arrow key navigation (index into _thumbnails, -1 = none)
+    private int _selectedIndex = -1;
 
     // Window drag state
     private bool _draggingWindow;
@@ -103,6 +109,7 @@ internal sealed class OverviewOverlay : Form
         // Register DWM thumbnails
         RegisterThumbnails();
         UpdateThumbnails();
+        _selectedIndex = -1;
 
         Show();
         Activate();
@@ -121,6 +128,7 @@ internal sealed class OverviewOverlay : Form
         _wm.ReclipAll();
 
         Hide();
+        OverviewClosed?.Invoke();
     }
 
     private void FitToExtents(int screenW, int screenH)
@@ -217,7 +225,52 @@ internal sealed class OverviewOverlay : Form
         {
             HideOverview();
             e.Handled = true;
+            return;
         }
+
+        if (_thumbnails.Count == 0) return;
+
+        // Arrow keys cycle through windows by Z-order
+        if (e.KeyCode == Keys.Right || e.KeyCode == Keys.Down)
+        {
+            _selectedIndex = (_selectedIndex + 1) % _thumbnails.Count;
+            NavigateToSelected();
+            e.Handled = true;
+        }
+        else if (e.KeyCode == Keys.Left || e.KeyCode == Keys.Up)
+        {
+            _selectedIndex = (_selectedIndex - 1 + _thumbnails.Count) % _thumbnails.Count;
+            NavigateToSelected();
+            e.Handled = true;
+        }
+        else if (e.KeyCode == Keys.Enter && _selectedIndex >= 0)
+        {
+            var (hWnd, _, world) = _thumbnails[_selectedIndex];
+            int style = NativeMethods.GetWindowLong(hWnd, NativeMethods.GWL_STYLE);
+            if ((style & (int)NativeMethods.WS_MINIMIZE) != 0)
+                NativeMethods.ShowWindow(hWnd, NativeMethods.SW_RESTORE);
+            var screen = Screen.PrimaryScreen!.WorkingArea;
+            _mainCanvas.CenterOn(world.X, world.Y, world.W, world.H, screen.Width, screen.Height);
+            _wm.Reproject();
+            _minimap.NotifyCanvasChanged();
+            NativeMethods.SetForegroundWindow(hWnd);
+            HideOverview();
+            e.Handled = true;
+        }
+    }
+
+    private void NavigateToSelected()
+    {
+        if (_selectedIndex < 0 || _selectedIndex >= _thumbnails.Count) return;
+        var (_, _, world) = _thumbnails[_selectedIndex];
+        var screen = Screen.PrimaryScreen!.Bounds;
+
+        // Center overview camera on selected window
+        _camX = world.X + world.W / 2 - screen.Width / (2 * _zoom);
+        _camY = world.Y + world.H / 2 - screen.Height / (2 * _zoom);
+
+        _grid?.UpdateCamera(_camX, _camY, _zoom);
+        UpdateThumbnails();
     }
 
     private void OnMouseDown(object? sender, MouseEventArgs e)
@@ -333,9 +386,14 @@ internal sealed class OverviewOverlay : Form
             if (wx >= world.X && wx <= world.X + world.W &&
                 wy >= world.Y && wy <= world.Y + world.H)
             {
+                // Restore if minimized
+                int style = NativeMethods.GetWindowLong(hWnd, NativeMethods.GWL_STYLE);
+                if ((style & (int)NativeMethods.WS_MINIMIZE) != 0)
+                    NativeMethods.ShowWindow(hWnd, NativeMethods.SW_RESTORE);
+
                 var screen = Screen.PrimaryScreen!.WorkingArea;
                 _mainCanvas.CenterOn(world.X, world.Y, world.W, world.H, screen.Width, screen.Height);
-                _wm.Reproject(updateDpi: true);
+                _wm.Reproject();
                 _minimap.NotifyCanvasChanged();
                 NativeMethods.SetForegroundWindow(hWnd);
                 HideOverview();

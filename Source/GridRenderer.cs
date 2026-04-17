@@ -36,6 +36,26 @@ internal sealed class GridRenderer : IDisposable
 
     private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
 
+    // Pre-compiled shader bytecode (compile once at startup)
+    private static byte[]? _vsBytecode;
+    private static byte[]? _psBytecode;
+
+    public static bool CompileShaders()
+    {
+        Compiler.Compile(ShaderSource, "VSMain", "", "vs_5_0", out var vsBlob, out var vsErr);
+        if (vsBlob == null) { vsErr?.Dispose(); return false; }
+
+        Compiler.Compile(ShaderSource, "PSMain", "", "ps_5_0", out var psBlob, out var psErr);
+        if (psBlob == null) { vsBlob.Dispose(); psErr?.Dispose(); return false; }
+
+        _vsBytecode = vsBlob.AsSpan().ToArray();
+        _psBytecode = psBlob.AsSpan().ToArray();
+
+        vsBlob.Dispose();
+        psBlob.Dispose();
+        return true;
+    }
+
     private const string ShaderSource = @"
 cbuffer GridCB : register(b0)
 {
@@ -288,7 +308,7 @@ float4 PSMain(VSOut input) : SV_Target
         if (hr.Failure) return false;
 
         CreateRenderTarget();
-        if (!CompileShaders()) return false;
+        if (!CreateShaders()) return false;
         CreateConstantBuffer();
         return true;
     }
@@ -299,19 +319,11 @@ float4 PSMain(VSOut input) : SV_Target
         _rtv = _device!.CreateRenderTargetView(backBuffer);
     }
 
-    private bool CompileShaders()
+    private bool CreateShaders()
     {
-        Compiler.Compile(ShaderSource, "VSMain", "", "vs_5_0", out var vsBlob, out var vsErr);
-        if (vsBlob == null) { vsErr?.Dispose(); return false; }
-
-        Compiler.Compile(ShaderSource, "PSMain", "", "ps_5_0", out var psBlob, out var psErr);
-        if (psBlob == null) { vsBlob.Dispose(); psErr?.Dispose(); return false; }
-
-        _vertexShader = _device!.CreateVertexShader(vsBlob.AsBytes());
-        _pixelShader = _device!.CreatePixelShader(psBlob.AsBytes());
-
-        vsBlob.Dispose();
-        psBlob.Dispose();
+        if (_vsBytecode == null || _psBytecode == null) return false;
+        _vertexShader = _device!.CreateVertexShader(_vsBytecode);
+        _pixelShader = _device!.CreatePixelShader(_psBytecode);
         return true;
     }
 
