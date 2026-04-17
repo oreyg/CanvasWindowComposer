@@ -285,6 +285,35 @@ float4 PSMain(VSOut input) : SV_Target
         color += glow * fade;
     }
 
+    // Camera viewport frame — corner brackets showing what the screen will show on close
+    {
+        float vw = screenW * zoom;
+        float vh = screenH * zoom;
+        float arm = min(vw, vh) * 0.025;
+        float lw = 3.0;
+
+        float ox = (screenW - vw) * 0.5;
+        float oy = (screenH - vh) * 0.5;
+        float dL = abs(screenPos.x - ox);
+        float dR = abs(screenPos.x - ox - vw);
+        float dT = abs(screenPos.y - oy);
+        float dB = abs(screenPos.y - oy - vh);
+
+        // Pixel relative to viewport rect (0,0 = top-left corner of frame)
+        float2 p = screenPos - float2(ox, oy);
+        // Distance from nearest edge, clamped inside the rect
+        float nearX = min(p.x, vw - p.x);
+        float nearY = min(p.y, vh - p.y);
+        bool inside = p.x >= 0 && p.x <= vw && p.y >= 0 && p.y <= vh;
+        // On edge and within arm length of a corner
+        float onEdgeX = step(nearX, lw) * step(nearY, arm);
+        float onEdgeY = step(nearY, lw) * step(nearX, arm);
+        float corners = inside ? saturate(onEdgeX + onEdgeY) : 0;
+
+        color += float3(0.0, 0.7, 1.0) * saturate(corners) * 0.4;
+    }
+
+
     return float4(color, 1.0);
 }
 ";
@@ -352,6 +381,7 @@ float4 PSMain(VSOut input) : SV_Target
     private float _panAccumX, _panAccumY; // only accumulates pan, not zoom-induced cam changes
 
     public void SetDpiScale(float scale) => _dpiScale = scale;
+    public void ResetClock() => _clock.Restart();
 
     /// <summary>Accumulate pan movement (not zoom). Drives nebula parallax.</summary>
     public void AccumulatePan(double dx, double dy)
@@ -409,6 +439,7 @@ float4 PSMain(VSOut input) : SV_Target
         while (_alive)
         {
             _wakeEvent.Wait(); // sleep until Start() signals
+            _clock.Restart(); // reset time for fade-in blend
 
             while (_running && _alive)
             {

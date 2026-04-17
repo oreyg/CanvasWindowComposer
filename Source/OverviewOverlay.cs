@@ -37,6 +37,18 @@ internal sealed class OverviewOverlay : Form
 
     private enum CloseAction { SyncCamera, KeepCamera }
 
+    /// <summary>Camera position matching the centered viewport frame in the shader.</summary>
+    private (double x, double y) ViewportCamera
+    {
+        get
+        {
+            // Matches shader: ox = (screenW - screenW * zoom) / 2, in world space = ox / zoom
+            double ox = Width * (1.0 / _zoom - 1.0) / 2.0;
+            double oy = Height * (1.0 / _zoom - 1.0) / 2.0;
+            return (_camX + ox, _camY + oy);
+        }
+    }
+
     // Window drag state
     private bool _draggingWindow;
     private int _dragIndex = -1;
@@ -146,7 +158,8 @@ internal sealed class OverviewOverlay : Form
 
         if (action == CloseAction.SyncCamera)
         {
-            _mainCanvas.SetCamera(_camX, _camY);
+            var (vx, vy) = ViewportCamera;
+            _mainCanvas.SetCamera(vx, vy);
             _wm.Reproject();
             _minimap.NotifyCanvasChanged();
         }
@@ -305,7 +318,6 @@ internal sealed class OverviewOverlay : Form
 
         _grid?.UpdateCamera(_camX, _camY, _zoom);
         UpdateThumbnails();
-        Invalidate();
     }
 
     private void OnMouseDown(object? sender, MouseEventArgs e)
@@ -401,7 +413,6 @@ internal sealed class OverviewOverlay : Form
 
         _grid?.UpdateCamera(_camX, _camY, _zoom);
         UpdateThumbnails();
-        Invalidate();
     }
 
     private void OnMouseClick(object? sender, MouseEventArgs e)

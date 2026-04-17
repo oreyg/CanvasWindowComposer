@@ -62,7 +62,7 @@ internal sealed class TrayApp : ApplicationContext
                 if (!AppConfig.DisableSearch)
                     _search.Toggle();
             },
-            onOverviewHotkey: () => _overview.Toggle(),
+            onOverviewHotkey: () => { _inertia.Cancel(); _overview.Toggle(); },
             onCanvasInput: OnCanvasInput);
         _mouseHook.SetNotifyTarget(_msgWindow.Handle);
 
@@ -206,7 +206,10 @@ internal sealed class TrayApp : ApplicationContext
             _inertia.Release();
 
         if (_mouseHook.TryDrainZoom())
+        {
+            _inertia.Cancel();
             _overview.Toggle();
+        }
 
         if (moved)
         {
