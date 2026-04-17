@@ -355,7 +355,7 @@ internal sealed class WindowManager
 
         foreach (var (hWnd, x, y, w, h, posOnly) in items)
         {
-            uint flags = NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOSENDCHANGING;
+            uint flags = NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE;
             if (posOnly) flags |= NativeMethods.SWP_NOSIZE;
 
             if (useBatch)
