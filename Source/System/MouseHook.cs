@@ -21,6 +21,9 @@ internal sealed class MouseHook : IDisposable
     private bool _altDrag; // true when drag was initiated with Alt (consume all input)
     private NativeMethods.POINT _lastPoint;
 
+    // Extra HWND treated as a valid pan-initiation surface (e.g., overview in pan mode)
+    public IntPtr ExtraPanSurface { get; set; } = IntPtr.Zero;
+
     // Accumulated drag delta (written by hook, read by message handler)
     private int _pendingDx;
     private int _pendingDy;
@@ -193,7 +196,7 @@ internal sealed class MouseHook : IDisposable
     private static bool IsShiftDown() =>
         (NativeMethods.GetKeyState(NativeMethods.VK_SHIFT) & KeyStateDownBit) != 0;
 
-    private static bool IsDesktopOrTaskbarAt(NativeMethods.POINT pt)
+    private bool IsDesktopOrTaskbarAt(NativeMethods.POINT pt)
     {
         IntPtr hwnd = NativeMethods.WindowFromPoint(pt);
         if (hwnd == IntPtr.Zero)
@@ -202,6 +205,10 @@ internal sealed class MouseHook : IDisposable
         IntPtr root = NativeMethods.GetAncestor(hwnd, NativeMethods.GA_ROOT);
         if (root == IntPtr.Zero)
             root = hwnd;
+
+        // Extra surface (e.g., overview overlay in pan mode)
+        if (ExtraPanSurface != IntPtr.Zero && root == ExtraPanSurface)
+            return true;
 
         IntPtr desktop = NativeMethods.GetDesktopWindow();
         IntPtr shell = NativeMethods.GetShellWindow();

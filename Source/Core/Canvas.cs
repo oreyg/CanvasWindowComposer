@@ -68,11 +68,20 @@ internal sealed class Canvas
 
     // ==================== CAMERA ====================
 
-    /// <summary>Raised when the camera moves. Subscribers should reproject windows and update UI.</summary>
+    /// <summary>Raised when the camera moves.</summary>
     public event Action? CameraChanged;
 
     /// <summary>Raised when a window is collapsed or expanded.</summary>
     public event Action<IntPtr>? CollapseChanged;
+
+    /// <summary>Raised when the caller explicitly commits canvas state to the system.</summary>
+    public event Action? Committed;
+
+    /// <summary>Propagate current canvas state to the system (reproject real windows).</summary>
+    public void Commit()
+    {
+        Committed?.Invoke();
+    }
 
     public void SetCamera(double camX, double camY)
     {

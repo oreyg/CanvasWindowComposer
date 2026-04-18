@@ -11,13 +11,46 @@ namespace CanvasDesktop;
 /// </summary>
 internal sealed class OverviewOverlay : Form
 {
+    public enum Mode { Hidden, Panning, Zooming }
+
+    private readonly record struct ModeConfig(
+        bool GridVisible,
+        byte DesktopOpacity,
+        bool TaskbarVisible,
+        bool InputEnabled,
+        bool InertiaAllowed);
+
+    private static readonly ModeConfig HiddenCfg = new(
+        GridVisible: false,
+        DesktopOpacity: 0,
+        TaskbarVisible: false,
+        InputEnabled: false,
+        InertiaAllowed: false);
+
+    private static readonly ModeConfig PanningCfg = new(
+        GridVisible: false,
+        DesktopOpacity: 255,
+        TaskbarVisible: true,
+        InputEnabled: false,
+        InertiaAllowed: true);
+
+    private static readonly ModeConfig ZoomingCfg = new(
+        GridVisible: true,
+        DesktopOpacity: 120,
+        TaskbarVisible: false,
+        InputEnabled: true,
+        InertiaAllowed: false);
+
     private readonly Canvas _mainCanvas;
     private readonly WindowManager _wm;
     private readonly IWindowApi _pos;
     private GridRenderer? _grid;
 
-    /// <summary>Raised when the overview is hidden (for foreground suppression).</summary>
-    public event Action? OverviewClosed;
+    public Mode CurrentMode { get; private set; } = Mode.Hidden;
+    private ModeConfig _cfg = HiddenCfg;
+
+    /// <summary>Fired when the overview transitions between modes (from, to).</summary>
+    public event Action<Mode, Mode>? ModeChanged;
 
     // Overview's own camera
     private double _camX, _camY, _zoom = 1.0;
@@ -28,12 +61,10 @@ internal sealed class OverviewOverlay : Form
     private const double MouseWheelDeltaPerNotch = 120.0;
     private const double ZoomEpsilon = 0.0001;
     private const float StandardDpi = 96f;
-    private const byte DesktopOpacityPanning = 255;
-    private const byte DesktopOpacityZoomed = 120;
-
-    // When true, grid renders and desktop thumbnail is semi-transparent.
-    // When false (panning mode), grid is hidden and desktop is opaque.
-    private bool _showGrid = true;
+    private readonly InertiaTracker _inertia = new();
+    private readonly object _inertiaQueueLock = new();
+    private int _pendingInertiaDx, _pendingInertiaDy;
+    private bool _inertiaPanQueued;
 
     // DWM thumbnail handles
     private readonly List<(IntPtr hWnd, IntPtr thumb, WorldRect world)> _thumbnails = new();
@@ -51,8 +82,6 @@ internal sealed class OverviewOverlay : Form
 
     // Arrow key navigation (index into _thumbnails, -1 = none)
     private int _selectedIndex = -1;
-
-    private enum CloseAction { SyncCamera, KeepCamera }
 
     /// <summary>Camera position matching the centered viewport frame in the shader.</summary>
     private (double x, double y) ViewportCamera
@@ -122,36 +151,122 @@ internal sealed class OverviewOverlay : Form
         _grid.StartThread();
     }
 
+    public void RecordPanDelta(int dx, int dy)
+    {
+        _inertia.RecordDelta(dx, dy);
+    }
+
+    public void ReleaseInertia()
+    {
+        if (!_inertia.Release() && CurrentMode != Mode.Hidden)
+        {
+            // No velocity — close overview immediately
+            TransitionTo(Mode.Hidden);
+        }
+    }
+
+    public void CancelInertia()
+    {
+        _inertia.Cancel();
+        lock (_inertiaQueueLock)
+        {
+            _pendingInertiaDx = 0;
+            _pendingInertiaDy = 0;
+        }
+    }
+
+    /// <summary>Called on grid render thread after each Present. Drives inertia.</summary>
+    private void OnGridFrameTick()
+    {
+        var (dx, dy, stopped) = _inertia.Tick();
+
+        if (stopped)
+        {
+            if (IsHandleCreated)
+                BeginInvoke(() => { if (CurrentMode != Mode.Hidden) TransitionTo(Mode.Hidden); });
+            return;
+        }
+
+        if ((dx != 0 || dy != 0) && IsHandleCreated)
+        {
+            bool queue;
+            lock (_inertiaQueueLock)
+            {
+                _pendingInertiaDx += dx;
+                _pendingInertiaDy += dy;
+                queue = !_inertiaPanQueued;
+                if (queue) _inertiaPanQueued = true;
+            }
+
+            if (queue)
+            {
+                BeginInvoke(() =>
+                {
+                    int cdx, cdy;
+                    lock (_inertiaQueueLock)
+                    {
+                        cdx = _pendingInertiaDx;
+                        cdy = _pendingInertiaDy;
+                        _pendingInertiaDx = 0;
+                        _pendingInertiaDy = 0;
+                        _inertiaPanQueued = false;
+                    }
+                    if (!_inertia.IsActive || (cdx == 0 && cdy == 0)) return;
+                    _mainCanvas.Pan(cdx, cdy);
+                });
+            }
+        }
+    }
+
     /// <summary>Sync overview camera to the main canvas and update visuals.</summary>
     public void SyncCamera()
     {
-        if (!Visible) return;
+        if (CurrentMode == Mode.Hidden) return;
         _camX = _mainCanvas.CamX;
         _camY = _mainCanvas.CamY;
         _zoom = _mainCanvas.Zoom;
 
-        _showGrid = false;
-        if (_grid != null) _grid.DrawGrid = false;
         _grid?.UpdateCamera(_camX, _camY, _zoom);
         UpdateThumbnails();
     }
 
-    public void Toggle(bool showGrid = true)
+    /// <summary>Single entry point for every mode change.</summary>
+    public void TransitionTo(Mode target, bool syncCameraOnClose = true)
     {
-        if (Visible)
-            HideOverview();
+        // Any call cancels inertia — transitioning into a mode means starting fresh,
+        // and this also handles the same-mode case (e.g. re-entering Panning during inertia).
+        _inertia.Cancel();
+
+        if (CurrentMode == target) return;
+
+        Mode from = CurrentMode;
+        ModeConfig cfg = target switch
+        {
+            Mode.Panning => PanningCfg,
+            Mode.Zooming => ZoomingCfg,
+            _            => HiddenCfg
+        };
+
+        // Update state BEFORE running internals that read _cfg
+        _cfg = cfg;
+        CurrentMode = target;
+
+        if (target == Mode.Hidden)
+            HideInternal(syncCamera: syncCameraOnClose && from != Mode.Hidden);
+        else if (from == Mode.Hidden)
+            ShowInternal();
         else
-            ShowOverview(showGrid);
+            ApplyConfig(); // pan <-> zoom switch
+
+        ModeChanged?.Invoke(from, target);
     }
 
-    private void ShowOverview(bool showGrid = true)
+    private void ShowInternal()
     {
-        // Cover primary screen
         var screen = Screen.PrimaryScreen!.Bounds;
         Location = new Point(screen.X, screen.Y);
         Size = new Size(screen.Width, screen.Height);
 
-        // Initialize grid once (needs HWND), thread persists
         if (_grid == null)
         {
             _grid = new GridRenderer();
@@ -161,41 +276,36 @@ internal sealed class OverviewOverlay : Form
             _grid.StartThread();
         }
 
-        // Start from current canvas camera
         _camX = _mainCanvas.CamX;
         _camY = _mainCanvas.CamY;
         _zoom = _mainCanvas.Zoom;
-        _showGrid = showGrid;
-        if (_grid != null) _grid.DrawGrid = showGrid;
 
-        // Unclip all windows so DWM thumbnails can render their content
         _wm.SuspendGreedyDraw = true;
         _wm.UnclipAll();
 
-        // Register desktop wallpaper first (renders behind everything)
         RegisterDesktopThumbnail();
         RegisterTaskbarThumbnail();
-
-        // Register DWM thumbnails for app windows
         RegisterThumbnails();
-        UpdateThumbnails();
+
+        ApplyConfig();
         _selectedIndex = -1;
 
         Show();
         Activate();
 
-        // Wake the grid render thread
+        _grid.OnFrameTick = OnGridFrameTick;
         _grid.Start(_camX, _camY, _zoom);
     }
 
-    private void HideOverview(CloseAction action = CloseAction.SyncCamera)
+    private void HideInternal(bool syncCamera)
     {
+        if (_grid != null) _grid.OnFrameTick = null;
         _grid?.Stop();
 
-        if (action == CloseAction.SyncCamera)
+        if (syncCamera)
         {
             var (vx, vy) = ViewportCamera;
-            _mainCanvas.SetCamera(vx, vy); // fires CameraChanged → Reproject + minimap
+            _mainCanvas.SetCamera(vx, vy);
         }
 
         _wm.SuspendGreedyDraw = false;
@@ -205,7 +315,12 @@ internal sealed class OverviewOverlay : Form
         UnregisterTaskbarThumbnail();
         UnregisterDesktopThumbnail();
         UnregisterThumbnails();
-        OverviewClosed?.Invoke();
+    }
+
+    private void ApplyConfig()
+    {
+        if (_grid != null) _grid.DrawGrid = _cfg.GridVisible;
+        UpdateThumbnails();
     }
 
     /// <summary>Navigate main canvas to a window and close overview.</summary>
@@ -218,7 +333,7 @@ internal sealed class OverviewOverlay : Form
         var screen = Screen.PrimaryScreen!.WorkingArea;
         _mainCanvas.CenterOn(world.X, world.Y, world.W, world.H, screen.Width, screen.Height);
         NativeMethods.SetForegroundWindow(hWnd);
-        HideOverview(CloseAction.KeepCamera);
+        TransitionTo(Mode.Hidden, syncCameraOnClose: false);
     }
 
     private void FitToExtents(int screenW, int screenH)
@@ -242,7 +357,7 @@ internal sealed class OverviewOverlay : Form
 
         if (worldW < 1 || worldH < 1) { _zoom = 1.0; return; }
 
-        // Fit: screen = world * zoom → zoom = screen / world
+        // Fit: screen = world * zoom -> zoom = screen / world
         _zoom = Math.Min((double)screenW / worldW, (double)screenH / worldH);
         _zoom = Math.Clamp(_zoom, ZoomMin, ZoomMax);
 
@@ -308,7 +423,7 @@ internal sealed class OverviewOverlay : Form
             return;
 
         // Pinned to the overlay, filling the entire screen
-        byte opacity = _showGrid ? DesktopOpacityZoomed : DesktopOpacityPanning;
+        byte opacity = _cfg.DesktopOpacity;
         var props = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
         {
             dwFlags = NativeMethods.DWM_TNP_RECTDESTINATION | NativeMethods.DWM_TNP_VISIBLE | NativeMethods.DWM_TNP_OPACITY,
@@ -349,8 +464,7 @@ internal sealed class OverviewOverlay : Form
         if (_taskbarThumb == IntPtr.Zero)
             return;
 
-        // Only visible during panning (grid hidden)
-        if (_showGrid)
+        if (!_cfg.TaskbarVisible)
         {
             var hideProps = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
             {
@@ -423,7 +537,7 @@ internal sealed class OverviewOverlay : Form
 
         foreach (var (hWnd, thumb, world) in _thumbnails)
         {
-            // Project world → screen using overview camera
+            // Project world -> screen using overview camera
             int sx = (int)((world.X - _camX) * _zoom);
             int sy = (int)((world.Y - _camY) * _zoom);
             int sw = Math.Max(1, (int)(world.W * _zoom));
@@ -459,9 +573,11 @@ internal sealed class OverviewOverlay : Form
 
     private void OnKeyDown(object? sender, KeyEventArgs e)
     {
+        if (!_cfg.InputEnabled) return;
+
         if (e.KeyCode == Keys.Escape)
         {
-            HideOverview();
+            TransitionTo(Mode.Hidden);
             e.Handled = true;
             return;
         }
@@ -505,6 +621,13 @@ internal sealed class OverviewOverlay : Form
 
     private void OnMouseDown(object? sender, MouseEventArgs e)
     {
+        if (!_cfg.InputEnabled)
+        {
+            // Any click during panning mode stops inertia and closes
+            TransitionTo(Mode.Hidden);
+            return;
+        }
+
         if (e.Button == MouseButtons.Left)
         {
             // Check if clicking on a window thumbnail
@@ -537,6 +660,8 @@ internal sealed class OverviewOverlay : Form
 
     private void OnMouseMove(object? sender, MouseEventArgs e)
     {
+        if (!_cfg.InputEnabled) return;
+
         if (_draggingWindow && _dragIndex >= 0 && _dragIndex < _thumbnails.Count)
         {
             double dx = (e.X - _dragWindowStart.X) / _zoom;
@@ -582,6 +707,8 @@ internal sealed class OverviewOverlay : Form
 
     private void OnMouseWheel(object? sender, MouseEventArgs e)
     {
+        if (!_cfg.InputEnabled) return;
+
         double notches = e.Delta / MouseWheelDeltaPerNotch;
         double newZoom = Math.Clamp(_zoom + notches * ZoomStep * _zoom, ZoomMin, ZoomMax);
 
@@ -594,8 +721,6 @@ internal sealed class OverviewOverlay : Form
         _camX = worldX - e.X / _zoom;
         _camY = worldY - e.Y / _zoom;
 
-        _showGrid = true;
-        if (_grid != null) _grid.DrawGrid = true;
         _grid?.UpdateCamera(_camX, _camY, _zoom);
 
         UpdateThumbnails();
@@ -609,6 +734,7 @@ internal sealed class OverviewOverlay : Form
 
     protected override void OnMouseDoubleClick(MouseEventArgs e)
     {
+        if (!_cfg.InputEnabled) return;
         if (e.Button != MouseButtons.Left) return;
 
         double wx = e.X / _zoom + _camX;
@@ -630,7 +756,7 @@ internal sealed class OverviewOverlay : Form
         if (e.CloseReason == CloseReason.UserClosing)
         {
             e.Cancel = true;
-            HideOverview();
+            TransitionTo(Mode.Hidden);
             return;
         }
 

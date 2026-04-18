@@ -10,7 +10,6 @@ internal sealed class TrayApp : ApplicationContext
 {
     private readonly NotifyIcon _trayIcon;
     private readonly MouseHook _mouseHook;
-    private readonly InertiaEngine _inertia;
     private readonly Timer _bgTimer; // reconcile, VD polling
     private readonly MessageWindow _msgWindow;
     private readonly DllInjector _injector;
@@ -47,12 +46,11 @@ internal sealed class TrayApp : ApplicationContext
         _minimap = new MinimapOverlay(_canvas);
         _search = new SearchOverlay(_canvas, _wm, winApi);
         _overview = new OverviewOverlay(_canvas, _wm, winApi);
-        _overview.OverviewClosed += OnOverlayClosed;
+        _overview.ModeChanged += OnOverviewModeChanged;
         _overview.Warmup();
-        _inertia = new InertiaEngine(_canvas);
-        _inertia.SetUiControl(_minimap);
         _canvas.CameraChanged += OnCameraChanged;
         _canvas.CollapseChanged += OnCollapseChanged;
+        _canvas.Committed += OnCommitted;
         _mouseHook = new MouseHook();
 
         _mouseHook.DragStarted += OnDragStarted;
@@ -106,16 +104,28 @@ internal sealed class TrayApp : ApplicationContext
         _winEvents.WindowMoved += OnWindowMoved;
     }
 
-    private void OnOverlayClosed()
+    private void OnOverviewModeChanged(OverviewOverlay.Mode from, OverviewOverlay.Mode to)
     {
-        _lastOverlayClosedTick = Environment.TickCount64;
+        _mouseHook.ExtraPanSurface = (to == OverviewOverlay.Mode.Panning)
+            ? _overview.Handle : IntPtr.Zero;
+
+        if (to == OverviewOverlay.Mode.Hidden)
+        {
+            _lastOverlayClosedTick = Environment.TickCount64;
+            _canvas.Commit();
+        }
     }
 
     private void OnCameraChanged()
     {
-        _wm.Reproject();
         _minimap.NotifyCanvasChanged();
         _overview.SyncCamera();
+        _wm.Reproject();
+    }
+
+    private void OnCommitted()
+    {
+        _wm.Reproject();
     }
 
     private void OnCollapseChanged(IntPtr hWnd)
@@ -126,12 +136,8 @@ internal sealed class TrayApp : ApplicationContext
 
     private void OnDragStarted()
     {
-        _inertia.Cancel();
-        if (!_overview.Visible)
-        {
-            _overview.Toggle(showGrid: false);
-            _minimap.BringToFront();
-        }
+        _overview.TransitionTo(OverviewOverlay.Mode.Panning);
+        _minimap.BringToFront();
     }
 
     private void OnSearchHotkey()
@@ -142,8 +148,10 @@ internal sealed class TrayApp : ApplicationContext
 
     private void OnOverviewHotkey()
     {
-        _inertia.Cancel();
-        _overview.Toggle();
+        if (_overview.CurrentMode == OverviewOverlay.Mode.Zooming)
+            _overview.TransitionTo(OverviewOverlay.Mode.Hidden);
+        else
+            _overview.TransitionTo(OverviewOverlay.Mode.Zooming);
     }
 
     private void OnWindowMinimized(IntPtr hWnd)
@@ -197,6 +205,7 @@ internal sealed class TrayApp : ApplicationContext
             {
                 var world = _canvas.Windows[hwnd];
                 _canvas.CenterOn(world.X, world.Y, world.W, world.H, screen.Width, screen.Height);
+                _canvas.Commit();
             }
         }
     }
@@ -206,21 +215,21 @@ internal sealed class TrayApp : ApplicationContext
     {
         if (_mouseHook.TryDrainDelta(out int dx, out int dy))
         {
-            _canvas.Pan(dx, dy); // fires CameraChanged → Reproject + minimap
-            _inertia.RecordDelta(dx, dy);
+            _canvas.Pan(dx, dy); // fires CameraChanged -> Reproject + minimap
+            _overview.RecordPanDelta(dx, dy);
         }
 
         if (_mouseHook.TryDrainDragEnded())
         {
-            if (_overview.Visible)
-                _overview.Toggle();
-            _inertia.Release();
+            _overview.ReleaseInertia();
         }
 
         if (_mouseHook.TryDrainZoom())
         {
-            _inertia.Cancel();
-            _overview.Toggle();
+            if (_overview.CurrentMode == OverviewOverlay.Mode.Zooming)
+                _overview.TransitionTo(OverviewOverlay.Mode.Hidden);
+            else
+                _overview.TransitionTo(OverviewOverlay.Mode.Zooming);
         }
     }
 
@@ -236,7 +245,7 @@ internal sealed class TrayApp : ApplicationContext
 
     private void OnDesktopSwitched()
     {
-        _inertia.Cancel();
+        _overview.CancelInertia();
 
         if (_lastDesktopId != Guid.Empty)
         {
@@ -247,9 +256,8 @@ internal sealed class TrayApp : ApplicationContext
         _lastDesktopId = _vds.CurrentDesktopId;
 
         if (_desktopStates.TryGetValue(_lastDesktopId, out var state))
-            _canvas.LoadState(state); // fires CameraChanged → Reproject + minimap
-        else
-            _wm.Reproject(); // discover windows on fresh desktop
+            _canvas.LoadState(state); // fires CameraChanged (virtual update)
+        _canvas.Commit(); // apply to real windows
 
         _minimap.ShowBriefly();
     }
@@ -267,7 +275,7 @@ internal sealed class TrayApp : ApplicationContext
             : "Canvas Desktop - Disabled";
 
         if (!_enabled)
-            _inertia.Cancel();
+            _overview.CancelInertia();
     }
 
     private void OnExit(object? sender, EventArgs e)
@@ -276,7 +284,6 @@ internal sealed class TrayApp : ApplicationContext
         _bgTimer.Dispose();
         _msgWindow.Dispose();
         _winEvents.Dispose();
-        _inertia.Dispose(); // cancel + join thread
         _wm.Reset();
         _mouseHook.Dispose();
         _overview.Close();

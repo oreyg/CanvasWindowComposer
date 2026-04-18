@@ -376,6 +376,12 @@ float4 PSMain(VSOut input) : SV_Target
     }
 
     public volatile bool DrawGrid = true;
+
+    /// <summary>
+    /// Fired on the render thread after each Present. Use for vsync-paced ticks.
+    /// </summary>
+    public Action? OnFrameTick;
+
     private float _dpiScale = 1.0f;
     private volatile bool _running;
     private volatile bool _alive = true;
@@ -491,6 +497,7 @@ float4 PSMain(VSOut input) : SV_Target
         }
 
         _swapChain.Present(VsyncInterval, PresentFlags.None);
+        OnFrameTick?.Invoke();
     }
 
     public void Dispose()
