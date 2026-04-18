@@ -157,6 +157,7 @@ internal sealed class OverviewManager : IDisposable
             pass.OnMouseMoved = HandleMouseMove;
             pass.OnMouseButtonUp = HandleMouseUp;
             pass.OnWheel = HandleMouseWheel;
+            pass.OnDoubleClick = HandleDoubleClick;
             _passes.Add(pass);
         }
     }
@@ -558,11 +559,13 @@ internal sealed class OverviewManager : IDisposable
         if (e.KeyCode == Keys.Right || e.KeyCode == Keys.Down)
         {
             _selectedIndex = (_selectedIndex + 1) % _visibleWindows.Count;
+            NavigateToSelected();
             e.Handled = true;
         }
         else if (e.KeyCode == Keys.Left || e.KeyCode == Keys.Up)
         {
             _selectedIndex = (_selectedIndex - 1 + _visibleWindows.Count) % _visibleWindows.Count;
+            NavigateToSelected();
             e.Handled = true;
         }
         else if (e.KeyCode == Keys.Enter && _selectedIndex >= 0)
@@ -571,6 +574,21 @@ internal sealed class OverviewManager : IDisposable
             GoToWindow(hWnd, world);
             e.Handled = true;
         }
+    }
+
+    private void NavigateToSelected()
+    {
+        if (_selectedIndex < 0 || _selectedIndex >= _visibleWindows.Count) return;
+        var (_, world) = _visibleWindows[_selectedIndex];
+        var vs = SystemInformation.VirtualScreen;
+
+        // Center overview camera on selected window (do NOT change zoom)
+        _camX = world.X + world.W / 2 - vs.Width / (2 * _zoom);
+        _camY = world.Y + world.H / 2 - vs.Height / (2 * _zoom);
+
+        foreach (var p in _passes)
+            p.Grid?.UpdateCamera(_camX, _camY, _zoom);
+        UpdateAllThumbnails();
     }
 
     private void HandleMouseDown(OverviewOverlay pass, MouseEventArgs e)
@@ -704,6 +722,27 @@ internal sealed class OverviewManager : IDisposable
             p.Grid?.UpdateCamera(_camX, _camY, _zoom);
 
         UpdateAllThumbnails();
+    }
+
+    private void HandleDoubleClick(OverviewOverlay pass, MouseEventArgs e)
+    {
+        if (!_cfg.InputEnabled) return;
+        if (e.Button != MouseButtons.Left) return;
+
+        int vx = e.X + pass.OriginX;
+        int vy = e.Y + pass.OriginY;
+        double wx = vx / _zoom + _camX;
+        double wy = vy / _zoom + _camY;
+
+        foreach (var (hWnd, world) in _visibleWindows)
+        {
+            if (wx >= world.X && wx <= world.X + world.W &&
+                wy >= world.Y && wy <= world.Y + world.H)
+            {
+                GoToWindow(hWnd, world);
+                return;
+            }
+        }
     }
 
     // ==================== HELPERS ====================
