@@ -61,6 +61,7 @@ internal sealed class OverviewOverlay : Form
     private const double MouseWheelDeltaPerNotch = 120.0;
     private const double ZoomEpsilon = 0.0001;
     private const float StandardDpi = 96f;
+    private const byte DesktopOpacityZoomedMin = 30;
     private readonly InertiaTracker _inertia = new();
     private readonly object _inertiaQueueLock = new();
     private int _pendingInertiaDx, _pendingInertiaDy;
@@ -284,8 +285,8 @@ internal sealed class OverviewOverlay : Form
         _wm.UnclipAll();
 
         RegisterDesktopThumbnail();
-        RegisterTaskbarThumbnail();
         RegisterThumbnails();
+        RegisterTaskbarThumbnail();
 
         ApplyConfig();
         _selectedIndex = -1;
@@ -320,7 +321,27 @@ internal sealed class OverviewOverlay : Form
     private void ApplyConfig()
     {
         if (_grid != null) _grid.DrawGrid = _cfg.GridVisible;
+        SetClickThrough(!_cfg.InputEnabled);
         UpdateThumbnails();
+    }
+
+    private void SetClickThrough(bool enable)
+    {
+        if (!IsHandleCreated) return;
+        int ex = NativeMethods.GetWindowLong(Handle, NativeMethods.GWL_EXSTYLE);
+        int flags = (int)(NativeMethods.WS_EX_TRANSPARENT | NativeMethods.WS_EX_LAYERED);
+        int updated = enable ? (ex | flags) : (ex & ~flags);
+        if (updated == ex) return;
+
+        NativeMethods.SetWindowLong(Handle, NativeMethods.GWL_EXSTYLE, updated);
+        if (enable)
+        {
+            // Layered windows default to 0 alpha — make it fully opaque
+            NativeMethods.SetLayeredWindowAttributes(Handle, 0, 255, NativeMethods.LWA_ALPHA);
+        }
+        NativeMethods.SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0,
+            NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER |
+            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_FRAMECHANGED);
     }
 
     /// <summary>Navigate main canvas to a window and close overview.</summary>
@@ -422,8 +443,19 @@ internal sealed class OverviewOverlay : Form
         if (_desktopThumb == IntPtr.Zero)
             return;
 
-        // Pinned to the overlay, filling the entire screen
+        // In zooming mode, fade the background out as the user zooms out.
+        // At ZoomMax (1.0) the thumbnail shows at full config opacity;
+        // at ZoomMin it fades toward DesktopOpacityZoomedMin (not fully invisible).
         byte opacity = _cfg.DesktopOpacity;
+        if (CurrentMode == Mode.Zooming)
+        {
+            double t = (_zoom - ZoomMin) / (ZoomMax - ZoomMin);
+            t = Math.Clamp(t, 0.0, 1.0);
+            double min = DesktopOpacityZoomedMin;
+            double max = _cfg.DesktopOpacity;
+            opacity = (byte)(min + (max - min) * t);
+        }
+
         var props = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
         {
             dwFlags = NativeMethods.DWM_TNP_RECTDESTINATION | NativeMethods.DWM_TNP_VISIBLE | NativeMethods.DWM_TNP_OPACITY,

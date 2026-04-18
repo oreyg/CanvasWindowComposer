@@ -54,6 +54,7 @@ internal sealed class TrayApp : ApplicationContext
         _mouseHook = new MouseHook();
 
         _mouseHook.DragStarted += OnDragStarted;
+        _mouseHook.ButtonDown += OnMouseButtonDown;
 
         // Hidden message window for hotkeys and input
         _msgWindow = new MessageWindow();
@@ -138,6 +139,14 @@ internal sealed class TrayApp : ApplicationContext
     {
         _overview.TransitionTo(OverviewOverlay.Mode.Panning);
         _minimap.BringToFront();
+    }
+
+    private void OnMouseButtonDown()
+    {
+        // A non-pan click while the panning overview is up — close it so the
+        // click interacts with the underlying window normally.
+        if (_overview.CurrentMode == OverviewOverlay.Mode.Panning)
+            _overview.TransitionTo(OverviewOverlay.Mode.Hidden);
     }
 
     private void OnSearchHotkey()

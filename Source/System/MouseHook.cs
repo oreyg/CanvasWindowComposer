@@ -54,6 +54,9 @@ internal sealed class MouseHook : IDisposable
     /// <summary>Called once when middle-click drag starts on the desktop.</summary>
     public event Action? DragStarted;
 
+    /// <summary>Fires for any mouse button down that did NOT start a pan drag.</summary>
+    public event Action? ButtonDown;
+
     public MouseHook()
     {
         _proc = HookCallback;
@@ -135,7 +138,13 @@ internal sealed class MouseHook : IDisposable
                             DragStarted?.Invoke();
                             return (IntPtr)1; // consume
                         }
+                        ButtonDown?.Invoke();
                     }
+                    break;
+
+                case NativeMethods.WM_LBUTTONDOWN:
+                case NativeMethods.WM_RBUTTONDOWN:
+                    ButtonDown?.Invoke();
                     break;
 
                 case NativeMethods.WM_MOUSEMOVE:

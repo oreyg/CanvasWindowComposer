@@ -33,6 +33,8 @@ internal static class NativeMethods
 
     // --- Mouse hook ---
     public const int WH_MOUSE_LL = 14;
+    public const int WM_LBUTTONDOWN = 0x0201;
+    public const int WM_RBUTTONDOWN = 0x0204;
     public const int WM_MBUTTONDOWN = 0x0207;
     public const int WM_MBUTTONUP = 0x0208;
     public const int WM_MOUSEMOVE = 0x0200;
@@ -54,6 +56,13 @@ internal static class NativeMethods
     public const uint WS_VISIBLE = 0x10000000;
     public const uint WS_EX_TOOLWINDOW = 0x00000080;
     public const uint WS_EX_APPWINDOW = 0x00040000;
+    public const uint WS_EX_TRANSPARENT = 0x00000020;
+    public const uint WS_EX_LAYERED = 0x00080000;
+
+    public const uint SWP_FRAMECHANGED = 0x0020;
+
+    public const uint LWA_COLORKEY = 0x1;
+    public const uint LWA_ALPHA = 0x2;
     public const uint WS_EX_NOACTIVATE = 0x08000000;
 
     // --- SetWindowPos flags ---
@@ -137,6 +146,9 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool SetLayeredWindowAttributes(IntPtr hwnd, uint crKey, byte bAlpha, uint dwFlags);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
