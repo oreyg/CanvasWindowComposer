@@ -112,7 +112,7 @@ internal sealed class Win32WindowApi : IWindowApi
 
         foreach (var (hWnd, x, y, w, h, posOnly) in items)
         {
-            uint flags = NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE;
+            uint flags = NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOSENDCHANGING | NativeMethods.SWP_NOREDRAW;
             if (posOnly) flags |= NativeMethods.SWP_NOSIZE;
 
             if (useBatch)

@@ -37,11 +37,11 @@ internal sealed class TrayApp : ApplicationContext
         AppConfig.Load();
         AppConfig.StartObservingChanges();
         GridRenderer.CompileShaders();
+        var winApi = new Win32WindowApi();
         _injector = new DllInjector();
         _vds = new VirtualDesktopService();
         _lastDesktopId = _vds.CurrentDesktopId;
         _canvas = new Canvas();
-        var winApi = new Win32WindowApi();
         _wm = new WindowManager(_canvas, winApi, _injector, _vds);
         _minimap = new MinimapOverlay(_canvas);
         _search = new SearchOverlay(_canvas, _wm, winApi);
@@ -242,7 +242,7 @@ internal sealed class TrayApp : ApplicationContext
         }
     }
 
-    /// <summary>Background timer for inertia, reconcile, VD polling.</summary>
+    /// <summary>Background timer for reconcile, Virtual Desktop polling.</summary>
     private void OnBgTick(object? sender, EventArgs e)
     {
         if (_vds.CheckDesktopChanged())
