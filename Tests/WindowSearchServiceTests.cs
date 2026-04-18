@@ -26,7 +26,7 @@ public class WindowSearchServiceTests
     public void ScoreMatch_ProcessNameOnly_Returns2()
     {
         int score = WindowSearchService.ScoreMatch("New Tab", "chrome", "chrome.exe", "chro");
-        // "New Tab" doesn't contain "chro", "chrome" contains "chro" → 2
+        // "New Tab" doesn't contain "chro", "chrome" contains "chro" -> 2
         Assert.Equal(2, score);
     }
 

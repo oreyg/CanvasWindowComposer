@@ -15,7 +15,7 @@ internal sealed class DllInjector
     private const uint RemoteThreadTimeoutMs = 5000;
 
     private readonly string _dllPath;
-    // processId → remote HMODULE of the injected DLL
+    // processId -> remote HMODULE of the injected DLL
     private readonly Dictionary<uint, IntPtr> _injected = new();
 
     // Process access rights
