@@ -71,6 +71,7 @@ public class WindowManagerTests
         var (canvas, api, wm) = Create();
 
         canvas.SetWindow((IntPtr)1, 100, 100, 800, 600);
+        canvas.MaximizeWindow((IntPtr)1);
         api.AddWindow((IntPtr)1, 0, 0, 800, 600,
             style: (int)NativeMethods.WS_MAXIMIZE);
 

@@ -52,6 +52,7 @@ internal sealed class TrayApp : ApplicationContext
         _overview.Warmup();
         _canvas.CameraChanged += OnCameraChanged;
         _canvas.CollapseChanged += OnCollapseChanged;
+        _canvas.MaximizeChanged += OnMaximizeChanged;
         _canvas.Committed += OnCommitted;
         _mouseHook = new MouseHook();
 
@@ -139,8 +140,13 @@ internal sealed class TrayApp : ApplicationContext
 
     private void OnCollapseChanged(IntPtr hWnd)
     {
-        if (_wm.ReprojectWindow(hWnd))
-            _minimap.NotifyCanvasChanged();
+        _wm.ReprojectWindow(hWnd);
+        _minimap.NotifyCanvasChanged();
+    }
+    private void OnMaximizeChanged(IntPtr hWnd)
+    {
+        _wm.ReprojectWindow(hWnd);
+        _minimap.NotifyCanvasChanged();
     }
 
     private void OnDragStarted()

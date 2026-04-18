@@ -167,9 +167,9 @@ internal sealed class MinimapOverlay : Form
         using var windowBrush = new SolidBrush(Color.FromArgb(100, 80, 160, 255));
         using var windowPen = new Pen(Color.FromArgb(180, 100, 180, 255), 1f);
 
-        foreach (var (hWnd, world) in _canvas.Windows)
+        foreach (var (_, world) in _canvas.Windows)
         {
-            if (_canvas.IsCollapsed(hWnd)) continue;
+            if (world.State != CanvasDesktop.WindowState.Normal) continue;
             float rx = (float)(offsetX + (world.X - minX) * scale);
             float ry = (float)(offsetY + (world.Y - minY) * scale);
             float rw = (float)(world.W * scale);

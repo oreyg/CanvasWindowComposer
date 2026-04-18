@@ -537,12 +537,11 @@ internal sealed class OverviewOverlay : Form
         var zOrder = new List<IntPtr>();
         _pos.EnumWindows(hWnd =>
         {
-            if (_mainCanvas.HasWindow(hWnd) && !_mainCanvas.IsCollapsed(hWnd))
+            if (_mainCanvas.Windows.TryGetValue(hWnd, out var world) && world.State == CanvasDesktop.WindowState.Normal)
                 zOrder.Add(hWnd);
             return true;
         });
 
-        // Reverse: register bottom windows first, topmost last
         for (int i = zOrder.Count - 1; i >= 0; i--)
         {
             IntPtr hWnd = zOrder[i];

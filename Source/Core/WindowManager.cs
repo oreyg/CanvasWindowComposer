@@ -45,14 +45,10 @@ internal sealed class WindowManager
 
         foreach (var (hWnd, world) in _canvas.Windows)
         {
-            if (_canvas.IsCollapsed(hWnd))
+            if (world.State != WindowState.Normal)
                 continue;
 
             if (!IsWindowActive(hWnd))
-                continue;
-
-            int style = _pos.GetWindowStyle(hWnd);
-            if ((style & (int)NativeMethods.WS_MAXIMIZE) != 0)
                 continue;
 
             var (sx, sy) = _canvas.WorldToScreen(world.X, world.Y);
@@ -125,6 +121,22 @@ internal sealed class WindowManager
     public void ReconcileWindow(IntPtr hWnd)
     {
         if (!IsWindowActive(hWnd))
+            return;
+
+        int style = _pos.GetWindowStyle(hWnd);
+        bool isMaximized = (style & (int)NativeMethods.WS_MAXIMIZE) != 0;
+
+        // Keep canvas's maximize state in sync with Win32
+        if (_canvas.HasWindow(hWnd))
+        {
+            if (isMaximized && !_canvas.IsMaximized(hWnd))
+                _canvas.MaximizeWindow(hWnd);
+            else if (!isMaximized && _canvas.IsMaximized(hWnd))
+                _canvas.UnmaximizeWindow(hWnd);
+        }
+
+        // Skip reprojecting maximized windows — their full-screen rect isn't a meaningful canvas position
+        if (isMaximized)
             return;
 
         if (!_lastScreen.TryGetValue(hWnd, out var last))

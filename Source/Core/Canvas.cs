@@ -3,16 +3,18 @@ using System.Collections.Generic;
 
 namespace CanvasDesktop;
 
+internal enum WindowState { Normal, Minimized, Maximized }
+
 internal struct WorldRect
 {
     public double X, Y, W, H;
+    public WindowState State;
 }
 
 internal struct CanvasState
 {
     public double CamX, CamY, Zoom;
     public Dictionary<IntPtr, WorldRect> Windows;
-    public HashSet<IntPtr>? Collapsed;
 }
 
 /// <summary>
@@ -28,13 +30,11 @@ internal sealed class Canvas
     private double _zoom = 1.0;
 
     private readonly Dictionary<IntPtr, WorldRect> _windows = new();
-    private readonly HashSet<IntPtr> _collapsed = new();
 
     public double CamX => _camX;
     public double CamY => _camY;
     public double Zoom => _zoom;
     public IReadOnlyDictionary<IntPtr, WorldRect> Windows => _windows;
-    public IReadOnlySet<IntPtr> CollapsedWindows => _collapsed;
     // ==================== PROJECTIONS ====================
 
     public (int x, int y) WorldToScreen(double wx, double wy)
@@ -73,6 +73,9 @@ internal sealed class Canvas
 
     /// <summary>Raised when a window is collapsed or expanded.</summary>
     public event Action<IntPtr>? CollapseChanged;
+
+    /// <summary>Raised when a window is maximized or restored from maximize.</summary>
+    public event Action<IntPtr>? MaximizeChanged;
 
     /// <summary>Raised when the caller explicitly commits canvas state to the system.</summary>
     public event Action? Committed;
@@ -113,8 +116,7 @@ internal sealed class Canvas
             CamX = _camX,
             CamY = _camY,
             Zoom = _zoom,
-            Windows = new Dictionary<IntPtr, WorldRect>(_windows),
-            Collapsed = new HashSet<IntPtr>(_collapsed)
+            Windows = new Dictionary<IntPtr, WorldRect>(_windows)
         };
     }
 
@@ -125,16 +127,10 @@ internal sealed class Canvas
         _camY = state.CamY;
         _zoom = state.Zoom;
         _windows.Clear();
-        _collapsed.Clear();
         if (state.Windows != null)
         {
             foreach (var (k, v) in state.Windows)
                 _windows[k] = v;
-        }
-        if (state.Collapsed != null)
-        {
-            foreach (var hWnd in state.Collapsed)
-                _collapsed.Add(hWnd);
         }
         CameraChanged?.Invoke();
     }
@@ -189,7 +185,7 @@ internal sealed class Canvas
 
         foreach (var (hWnd, r) in _windows)
         {
-            if (_collapsed.Contains(hWnd)) continue;
+            if (r.State != WindowState.Normal) continue;
             any = true;
             if (r.X < minX) minX = r.X;
             if (r.Y < minY) minY = r.Y;
@@ -215,31 +211,64 @@ internal sealed class Canvas
     public void RemoveWindow(IntPtr hWnd)
     {
         _windows.Remove(hWnd);
-        _collapsed.Remove(hWnd);
     }
 
     public void ClearWindows()
     {
         _windows.Clear();
-        _collapsed.Clear();
     }
 
-    // ==================== COLLAPSED STATE ====================
+    // ==================== WINDOW STATE ====================
 
-    public void CollapseWindow(IntPtr hWnd)
+    public WindowState GetWindowState(IntPtr hWnd)
     {
-        if (_collapsed.Add(hWnd))
-            CollapseChanged?.Invoke(hWnd);
-    }
-
-    public void ExpandWindow(IntPtr hWnd)
-    {
-        if (_collapsed.Remove(hWnd))
-            CollapseChanged?.Invoke(hWnd);
+        return _windows.TryGetValue(hWnd, out var r) ? r.State : WindowState.Normal;
     }
 
     public bool IsCollapsed(IntPtr hWnd)
     {
-        return _collapsed.Contains(hWnd);
+        return GetWindowState(hWnd) == WindowState.Minimized;
+    }
+
+    public bool IsMaximized(IntPtr hWnd)
+    {
+        return GetWindowState(hWnd) == WindowState.Maximized;
+    }
+
+    public void CollapseWindow(IntPtr hWnd)
+    {
+        SetWindowState(hWnd, WindowState.Minimized);
+    }
+
+    public void ExpandWindow(IntPtr hWnd)
+    {
+        if (GetWindowState(hWnd) == WindowState.Minimized)
+            SetWindowState(hWnd, WindowState.Normal);
+    }
+
+    public void MaximizeWindow(IntPtr hWnd)
+    {
+        SetWindowState(hWnd, WindowState.Maximized);
+    }
+
+    public void UnmaximizeWindow(IntPtr hWnd)
+    {
+        if (GetWindowState(hWnd) == WindowState.Maximized)
+            SetWindowState(hWnd, WindowState.Normal);
+    }
+
+    private void SetWindowState(IntPtr hWnd, WindowState state)
+    {
+        if (!_windows.TryGetValue(hWnd, out var r)) return;
+        WindowState old = r.State;
+        if (old == state) return;
+
+        r.State = state;
+        _windows[hWnd] = r;
+
+        if (old == WindowState.Minimized || state == WindowState.Minimized)
+            CollapseChanged?.Invoke(hWnd);
+        if (old == WindowState.Maximized || state == WindowState.Maximized)
+            MaximizeChanged?.Invoke(hWnd);
     }
 }
