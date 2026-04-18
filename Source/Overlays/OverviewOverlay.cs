@@ -28,9 +28,22 @@ internal sealed class OverviewOverlay : Form
     private const double MouseWheelDeltaPerNotch = 120.0;
     private const double ZoomEpsilon = 0.0001;
     private const float StandardDpi = 96f;
+    private const byte DesktopOpacityPanning = 255;
+    private const byte DesktopOpacityZoomed = 120;
+
+    // When true, grid renders and desktop thumbnail is semi-transparent.
+    // When false (panning mode), grid is hidden and desktop is opaque.
+    private bool _showGrid = true;
 
     // DWM thumbnail handles
     private readonly List<(IntPtr hWnd, IntPtr thumb, WorldRect world)> _thumbnails = new();
+
+    // Desktop wallpaper thumbnail (rendered behind all windows)
+    private IntPtr _desktopThumb;
+
+    // Taskbar thumbnail (pinned to screen edge during panning)
+    private IntPtr _taskbarThumb;
+    private IntPtr _taskbarHwnd;
 
     // Pan state
     private bool _panning;
@@ -109,15 +122,29 @@ internal sealed class OverviewOverlay : Form
         _grid.StartThread();
     }
 
-    public void Toggle()
+    /// <summary>Sync overview camera to the main canvas and update visuals.</summary>
+    public void SyncCamera()
+    {
+        if (!Visible) return;
+        _camX = _mainCanvas.CamX;
+        _camY = _mainCanvas.CamY;
+        _zoom = _mainCanvas.Zoom;
+
+        _showGrid = false;
+        if (_grid != null) _grid.DrawGrid = false;
+        _grid?.UpdateCamera(_camX, _camY, _zoom);
+        UpdateThumbnails();
+    }
+
+    public void Toggle(bool showGrid = true)
     {
         if (Visible)
             HideOverview();
         else
-            ShowOverview();
+            ShowOverview(showGrid);
     }
 
-    private void ShowOverview()
+    private void ShowOverview(bool showGrid = true)
     {
         // Cover primary screen
         var screen = Screen.PrimaryScreen!.Bounds;
@@ -138,12 +165,18 @@ internal sealed class OverviewOverlay : Form
         _camX = _mainCanvas.CamX;
         _camY = _mainCanvas.CamY;
         _zoom = _mainCanvas.Zoom;
+        _showGrid = showGrid;
+        if (_grid != null) _grid.DrawGrid = showGrid;
 
         // Unclip all windows so DWM thumbnails can render their content
         _wm.SuspendGreedyDraw = true;
         _wm.UnclipAll();
 
-        // Register DWM thumbnails
+        // Register desktop wallpaper first (renders behind everything)
+        RegisterDesktopThumbnail();
+        RegisterTaskbarThumbnail();
+
+        // Register DWM thumbnails for app windows
         RegisterThumbnails();
         UpdateThumbnails();
         _selectedIndex = -1;
@@ -158,7 +191,6 @@ internal sealed class OverviewOverlay : Form
     private void HideOverview(CloseAction action = CloseAction.SyncCamera)
     {
         _grid?.Stop();
-        UnregisterThumbnails();
 
         if (action == CloseAction.SyncCamera)
         {
@@ -170,6 +202,9 @@ internal sealed class OverviewOverlay : Form
         _wm.ReclipAll();
 
         Hide();
+        UnregisterTaskbarThumbnail();
+        UnregisterDesktopThumbnail();
+        UnregisterThumbnails();
         OverviewClosed?.Invoke();
     }
 
@@ -218,6 +253,137 @@ internal sealed class OverviewOverlay : Form
         _camY = cy - screenH / (2 * _zoom);
     }
 
+    /// <summary>Find the window that renders the desktop wallpaper.</summary>
+    private static IntPtr FindDesktopWallpaperWindow()
+    {
+        // The wallpaper is rendered by a WorkerW window that sits behind Progman.
+        // Sending Progman a special message (0x052C) ensures the WorkerW is created.
+        IntPtr progman = NativeMethods.FindWindow("Progman", null);
+        if (progman == IntPtr.Zero)
+            return IntPtr.Zero;
+
+        // Trigger WorkerW creation
+        NativeMethods.SendMessage(progman, 0x052C, IntPtr.Zero, IntPtr.Zero);
+
+        // Find the WorkerW that has a SHELLDLL_DefView child — the one behind Progman
+        IntPtr workerW = IntPtr.Zero;
+        NativeMethods.EnumWindows((hWnd, _) =>
+        {
+            IntPtr shell = NativeMethods.FindWindowEx(hWnd, IntPtr.Zero, "SHELLDLL_DefView", null);
+            if (shell != IntPtr.Zero)
+            {
+                // The wallpaper WorkerW is the next sibling after this one
+                workerW = NativeMethods.FindWindowEx(IntPtr.Zero, hWnd, "WorkerW", null);
+            }
+            return true;
+        }, IntPtr.Zero);
+
+        // Fall back to Progman if no WorkerW found
+        return workerW != IntPtr.Zero ? workerW : progman;
+    }
+
+    private void RegisterDesktopThumbnail()
+    {
+        IntPtr desktopWnd = FindDesktopWallpaperWindow();
+        if (desktopWnd == IntPtr.Zero)
+            return;
+
+        int hr = NativeMethods.DwmRegisterThumbnail(Handle, desktopWnd, out _desktopThumb);
+        if (hr != 0)
+            _desktopThumb = IntPtr.Zero;
+    }
+
+    private void UnregisterDesktopThumbnail()
+    {
+        if (_desktopThumb != IntPtr.Zero)
+        {
+            NativeMethods.DwmUnregisterThumbnail(_desktopThumb);
+            _desktopThumb = IntPtr.Zero;
+        }
+    }
+
+    private void UpdateDesktopThumbnail()
+    {
+        if (_desktopThumb == IntPtr.Zero)
+            return;
+
+        // Pinned to the overlay, filling the entire screen
+        byte opacity = _showGrid ? DesktopOpacityZoomed : DesktopOpacityPanning;
+        var props = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
+        {
+            dwFlags = NativeMethods.DWM_TNP_RECTDESTINATION | NativeMethods.DWM_TNP_VISIBLE | NativeMethods.DWM_TNP_OPACITY,
+            rcDestination = new NativeMethods.RECT { Left = 0, Top = 0, Right = Width, Bottom = Height },
+            fVisible = true,
+            opacity = opacity
+        };
+
+        NativeMethods.DwmUpdateThumbnailProperties(_desktopThumb, ref props);
+    }
+
+    private void RegisterTaskbarThumbnail()
+    {
+        _taskbarHwnd = NativeMethods.FindWindow("Shell_TrayWnd", null);
+        if (_taskbarHwnd == IntPtr.Zero)
+            return;
+
+        int hr = NativeMethods.DwmRegisterThumbnail(Handle, _taskbarHwnd, out _taskbarThumb);
+        if (hr != 0)
+        {
+            _taskbarThumb = IntPtr.Zero;
+            _taskbarHwnd = IntPtr.Zero;
+        }
+    }
+
+    private void UnregisterTaskbarThumbnail()
+    {
+        if (_taskbarThumb != IntPtr.Zero)
+        {
+            NativeMethods.DwmUnregisterThumbnail(_taskbarThumb);
+            _taskbarThumb = IntPtr.Zero;
+            _taskbarHwnd = IntPtr.Zero;
+        }
+    }
+
+    private void UpdateTaskbarThumbnail()
+    {
+        if (_taskbarThumb == IntPtr.Zero)
+            return;
+
+        // Only visible during panning (grid hidden)
+        if (_showGrid)
+        {
+            var hideProps = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
+            {
+                dwFlags = NativeMethods.DWM_TNP_VISIBLE,
+                fVisible = false
+            };
+            NativeMethods.DwmUpdateThumbnailProperties(_taskbarThumb, ref hideProps);
+            return;
+        }
+
+        // Get the taskbar's actual screen rect to pin it at the correct edge
+        NativeMethods.GetWindowRect(_taskbarHwnd, out var tbRect);
+        int tbW = tbRect.Right - tbRect.Left;
+        int tbH = tbRect.Bottom - tbRect.Top;
+
+        // Use the taskbar's screen position directly (it's pinned, not projected)
+        var props = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
+        {
+            dwFlags = NativeMethods.DWM_TNP_RECTDESTINATION | NativeMethods.DWM_TNP_VISIBLE | NativeMethods.DWM_TNP_OPACITY,
+            rcDestination = new NativeMethods.RECT
+            {
+                Left = tbRect.Left,
+                Top = tbRect.Top,
+                Right = tbRect.Left + tbW,
+                Bottom = tbRect.Top + tbH
+            },
+            fVisible = true,
+            opacity = 255
+        };
+
+        NativeMethods.DwmUpdateThumbnailProperties(_taskbarThumb, ref props);
+    }
+
     private void RegisterThumbnails()
     {
         // Enumerate in Z-order (EnumWindows returns topmost first).
@@ -252,6 +418,9 @@ internal sealed class OverviewOverlay : Form
 
     private void UpdateThumbnails()
     {
+        UpdateDesktopThumbnail();
+        UpdateTaskbarThumbnail();
+
         foreach (var (hWnd, thumb, world) in _thumbnails)
         {
             // Project world → screen using overview camera
@@ -260,10 +429,24 @@ internal sealed class OverviewOverlay : Form
             int sw = Math.Max(1, (int)(world.W * _zoom));
             int sh = Math.Max(1, (int)(world.H * _zoom));
 
+            // Shrink destination rect by the DWM invisible frame (shadow)
+            // so thumbnails match the visual window size, not GetWindowRect
+            var (iL, iT, iR, iB) = _pos.GetFrameInset(hWnd);
+            int fL = (int)(iL * _zoom);
+            int fT = (int)(iT * _zoom);
+            int fR = (int)(iR * _zoom);
+            int fB = (int)(iB * _zoom);
+
             var props = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
             {
                 dwFlags = NativeMethods.DWM_TNP_RECTDESTINATION | NativeMethods.DWM_TNP_VISIBLE | NativeMethods.DWM_TNP_OPACITY,
-                rcDestination = new NativeMethods.RECT { Left = sx, Top = sy, Right = sx + sw, Bottom = sy + sh },
+                rcDestination = new NativeMethods.RECT
+                {
+                    Left = sx + fL,
+                    Top = sy + fT,
+                    Right = sx + sw - fR,
+                    Bottom = sy + sh - fB
+                },
                 fVisible = true,
                 opacity = 255
             };
@@ -411,7 +594,10 @@ internal sealed class OverviewOverlay : Form
         _camX = worldX - e.X / _zoom;
         _camY = worldY - e.Y / _zoom;
 
+        _showGrid = true;
+        if (_grid != null) _grid.DrawGrid = true;
         _grid?.UpdateCamera(_camX, _camY, _zoom);
+
         UpdateThumbnails();
     }
 

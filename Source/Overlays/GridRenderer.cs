@@ -375,6 +375,7 @@ float4 PSMain(VSOut input) : SV_Target
             CpuAccessFlags.Write));
     }
 
+    public volatile bool DrawGrid = true;
     private float _dpiScale = 1.0f;
     private volatile bool _running;
     private volatile bool _alive = true;
@@ -475,11 +476,19 @@ float4 PSMain(VSOut input) : SV_Target
 
         _context.OMSetRenderTargets(_rtv!);
         _context.RSSetViewport(0, 0, _width, _height);
-        _context.VSSetShader(_vertexShader);
-        _context.PSSetShader(_pixelShader);
-        _context.PSSetConstantBuffer(0, _constantBuffer);
-        _context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
-        _context.Draw(FullscreenTriangleVertexCount, 0);
+
+        if (DrawGrid)
+        {
+            _context.VSSetShader(_vertexShader);
+            _context.PSSetShader(_pixelShader);
+            _context.PSSetConstantBuffer(0, _constantBuffer);
+            _context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
+            _context.Draw(FullscreenTriangleVertexCount, 0);
+        }
+        else
+        {
+            _context.ClearRenderTargetView(_rtv!, new Vortice.Mathematics.Color4(0, 0, 0, 0));
+        }
 
         _swapChain.Present(VsyncInterval, PresentFlags.None);
     }

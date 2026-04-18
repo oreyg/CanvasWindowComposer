@@ -68,6 +68,7 @@ internal static class NativeMethods
     public const uint GA_ROOT = 2;
 
     // --- DWM attributes ---
+    public const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
     public const int DWMWA_CLOAKED = 14;
 
     // --- DPI awareness ---
@@ -158,6 +159,12 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern IntPtr GetDesktopWindow();
 
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr FindWindow(string? lpClassName, string? lpWindowName);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr FindWindowEx(IntPtr hWndParent, IntPtr hWndChildAfter, string? lpszClass, string? lpszWindow);
+
     [DllImport("user32.dll")]
     public static extern IntPtr WindowFromPoint(POINT point);
 
@@ -212,6 +219,9 @@ internal static class NativeMethods
     // --- DWM ---
     [DllImport("dwmapi.dll")]
     public static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out int pvAttribute, int cbAttribute);
+
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out RECT pvAttribute, int cbAttribute);
 
     [DllImport("dwmapi.dll")]
     public static extern int DwmRegisterThumbnail(IntPtr hwndDestination, IntPtr hwndSource, out IntPtr phThumbnailId);

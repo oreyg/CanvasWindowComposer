@@ -32,6 +32,25 @@ internal sealed class Win32WindowApi : IWindowApi
         return (rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
     }
 
+    public (int left, int top, int right, int bottom) GetFrameInset(IntPtr hWnd)
+    {
+        NativeMethods.GetWindowRect(hWnd, out var full);
+        int hr = NativeMethods.DwmGetWindowAttribute(hWnd,
+            NativeMethods.DWMWA_EXTENDED_FRAME_BOUNDS,
+            out NativeMethods.RECT visual,
+            System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.RECT>());
+
+        if (hr != 0)
+            return (0, 0, 0, 0);
+
+        return (
+            Math.Max(0, visual.Left - full.Left),
+            Math.Max(0, visual.Top - full.Top),
+            Math.Max(0, full.Right - visual.Right),
+            Math.Max(0, full.Bottom - visual.Bottom)
+        );
+    }
+
     public uint GetWindowProcessId(IntPtr hWnd)
     {
         NativeMethods.GetWindowThreadProcessId(hWnd, out uint pid);

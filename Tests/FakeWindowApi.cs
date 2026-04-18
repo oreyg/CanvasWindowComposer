@@ -44,6 +44,11 @@ internal sealed class FakeWindowApi : IWindowApi
     public (int x, int y, int w, int h) GetWindowRect(IntPtr hWnd) =>
         Windows.TryGetValue(hWnd, out var w) ? (w.X, w.Y, w.W, w.H) : (0, 0, 0, 0);
 
+    public (int left, int top, int right, int bottom) GetFrameInset(IntPtr hWnd)
+    {
+        return (0, 0, 0, 0);
+    }
+
     public uint GetWindowProcessId(IntPtr hWnd) =>
         Windows.TryGetValue(hWnd, out var w) ? w.ProcessId : 0;
 

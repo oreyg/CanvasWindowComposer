@@ -133,11 +133,13 @@ internal sealed class InertiaEngine : IDisposable
                 if ((dx != 0 || dy != 0) && _uiControl != null)
                 {
                     int cdx = dx, cdy = dy;
+                    /*
                     _uiControl.Invoke(() =>
                     {
                         if (!_animating) return;
                         _canvas.Pan(cdx, cdy); // fires CameraChanged → Reproject + minimap
                     });
+                    */
                 }
             }
 
