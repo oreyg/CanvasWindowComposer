@@ -12,6 +12,7 @@ internal interface IWindowApi
     bool IsWindowVisible(IntPtr hWnd);
     int GetWindowStyle(IntPtr hWnd);
     (int x, int y, int w, int h) GetWindowRect(IntPtr hWnd);
+    (int left, int top, int right, int bottom) GetFrameInset(IntPtr hWnd);
     uint GetWindowProcessId(IntPtr hWnd);
 
     // Filtering

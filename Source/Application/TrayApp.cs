@@ -115,6 +115,7 @@ internal sealed class TrayApp : ApplicationContext
     {
         _wm.Reproject();
         _minimap.NotifyCanvasChanged();
+        _overview.SyncCamera();
     }
 
     private void OnCollapseChanged(IntPtr hWnd)
@@ -126,6 +127,11 @@ internal sealed class TrayApp : ApplicationContext
     private void OnDragStarted()
     {
         _inertia.Cancel();
+        if (!_overview.Visible)
+        {
+            _overview.Toggle(showGrid: false);
+            _minimap.BringToFront();
+        }
     }
 
     private void OnSearchHotkey()
@@ -205,7 +211,11 @@ internal sealed class TrayApp : ApplicationContext
         }
 
         if (_mouseHook.TryDrainDragEnded())
+        {
+            if (_overview.Visible)
+                _overview.Toggle();
             _inertia.Release();
+        }
 
         if (_mouseHook.TryDrainZoom())
         {
