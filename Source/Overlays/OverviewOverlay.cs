@@ -73,9 +73,12 @@ internal sealed class OverviewOverlay : Form
     // Desktop wallpaper thumbnail (rendered behind all windows)
     private IntPtr _desktopThumb;
 
-    // Taskbar thumbnail (pinned to screen edge during panning)
-    private IntPtr _taskbarThumb;
-    private IntPtr _taskbarHwnd;
+    // Taskbar thumbnails — one per taskbar window (primary + secondary monitors)
+    private readonly List<(IntPtr hwnd, IntPtr thumb)> _taskbars = new();
+
+    // Overlay covers the virtual screen; all thumbnail destination rects are in
+    // overlay-local coords, obtained by subtracting these from physical-screen coords.
+    private int _overlayOriginX, _overlayOriginY;
 
     // Pan state
     private bool _panning;
@@ -138,15 +141,17 @@ internal sealed class OverviewOverlay : Form
     {
         if (_grid != null) return;
 
-        var screen = Screen.PrimaryScreen!.Bounds;
-        Location = new Point(screen.X, screen.Y);
-        Size = new Size(screen.Width, screen.Height);
+        var vs = SystemInformation.VirtualScreen;
+        _overlayOriginX = vs.X;
+        _overlayOriginY = vs.Y;
+        Location = new Point(vs.X, vs.Y);
+        Size = new Size(vs.Width, vs.Height);
 
         // Force HWND creation without showing
         _ = Handle;
 
         _grid = new GridRenderer();
-        _grid.Initialize(Handle, screen.Width, screen.Height);
+        _grid.Initialize(Handle, vs.Width, vs.Height);
         using (var g = CreateGraphics())
             _grid.SetDpiScale(g.DpiX / StandardDpi);
         _grid.StartThread();
@@ -264,14 +269,16 @@ internal sealed class OverviewOverlay : Form
 
     private void ShowInternal()
     {
-        var screen = Screen.PrimaryScreen!.Bounds;
-        Location = new Point(screen.X, screen.Y);
-        Size = new Size(screen.Width, screen.Height);
+        var vs = SystemInformation.VirtualScreen;
+        _overlayOriginX = vs.X;
+        _overlayOriginY = vs.Y;
+        Location = new Point(vs.X, vs.Y);
+        Size = new Size(vs.Width, vs.Height);
 
         if (_grid == null)
         {
             _grid = new GridRenderer();
-            _grid.Initialize(Handle, screen.Width, screen.Height);
+            _grid.Initialize(Handle, vs.Width, vs.Height);
             using (var g = CreateGraphics())
                 _grid.SetDpiScale(g.DpiX / StandardDpi);
             _grid.StartThread();
@@ -285,8 +292,8 @@ internal sealed class OverviewOverlay : Form
         _wm.UnclipAll();
 
         RegisterDesktopThumbnail();
-        RegisterThumbnails();
-        RegisterTaskbarThumbnail();
+        RegisterWindowThumbnails();
+        RegisterTaskbarThumbnails();
 
         ApplyConfig();
         _selectedIndex = -1;
@@ -313,9 +320,9 @@ internal sealed class OverviewOverlay : Form
         _wm.ReclipAll();
 
         Hide();
-        UnregisterTaskbarThumbnail();
+        UnregisterTaskbarThumbnails();
+        UnregisterWindowThumbnails();
         UnregisterDesktopThumbnail();
-        UnregisterThumbnails();
     }
 
     private void ApplyConfig()
@@ -351,7 +358,7 @@ internal sealed class OverviewOverlay : Form
         if ((style & (int)NativeMethods.WS_MINIMIZE) != 0)
             NativeMethods.ShowWindow(hWnd, NativeMethods.SW_RESTORE);
 
-        var screen = Screen.PrimaryScreen!.WorkingArea;
+        var screen = SystemInformation.VirtualScreen;
         _mainCanvas.CenterOn(world.X, world.Y, world.W, world.H, screen.Width, screen.Height);
         NativeMethods.SetForegroundWindow(hWnd);
         TransitionTo(Mode.Hidden, syncCameraOnClose: false);
@@ -467,34 +474,41 @@ internal sealed class OverviewOverlay : Form
         NativeMethods.DwmUpdateThumbnailProperties(_desktopThumb, ref props);
     }
 
-    private void RegisterTaskbarThumbnail()
+    private void RegisterTaskbarThumbnails()
     {
-        _taskbarHwnd = NativeMethods.FindWindow("Shell_TrayWnd", null);
-        if (_taskbarHwnd == IntPtr.Zero)
-            return;
+        // Primary taskbar
+        IntPtr primary = NativeMethods.FindWindow("Shell_TrayWnd", null);
+        if (primary != IntPtr.Zero)
+            AddTaskbar(primary);
 
-        int hr = NativeMethods.DwmRegisterThumbnail(Handle, _taskbarHwnd, out _taskbarThumb);
-        if (hr != 0)
+        // Secondary taskbars — one per non-primary monitor
+        NativeMethods.EnumWindows((hWnd, _) =>
         {
-            _taskbarThumb = IntPtr.Zero;
-            _taskbarHwnd = IntPtr.Zero;
-        }
+            var cls = new System.Text.StringBuilder(64);
+            NativeMethods.GetClassName(hWnd, cls, cls.Capacity);
+            if (cls.ToString() == "Shell_SecondaryTrayWnd")
+                AddTaskbar(hWnd);
+            return true;
+        }, IntPtr.Zero);
     }
 
-    private void UnregisterTaskbarThumbnail()
+    private void AddTaskbar(IntPtr hwnd)
     {
-        if (_taskbarThumb != IntPtr.Zero)
-        {
-            NativeMethods.DwmUnregisterThumbnail(_taskbarThumb);
-            _taskbarThumb = IntPtr.Zero;
-            _taskbarHwnd = IntPtr.Zero;
-        }
+        int hr = NativeMethods.DwmRegisterThumbnail(Handle, hwnd, out IntPtr thumb);
+        if (hr == 0)
+            _taskbars.Add((hwnd, thumb));
     }
 
-    private void UpdateTaskbarThumbnail()
+    private void UnregisterTaskbarThumbnails()
     {
-        if (_taskbarThumb == IntPtr.Zero)
-            return;
+        foreach (var (_, thumb) in _taskbars)
+            NativeMethods.DwmUnregisterThumbnail(thumb);
+        _taskbars.Clear();
+    }
+
+    private void UpdateTaskbarThumbnails()
+    {
+        if (_taskbars.Count == 0) return;
 
         if (!_cfg.TaskbarVisible)
         {
@@ -503,34 +517,32 @@ internal sealed class OverviewOverlay : Form
                 dwFlags = NativeMethods.DWM_TNP_VISIBLE,
                 fVisible = false
             };
-            NativeMethods.DwmUpdateThumbnailProperties(_taskbarThumb, ref hideProps);
+            foreach (var (_, thumb) in _taskbars)
+                NativeMethods.DwmUpdateThumbnailProperties(thumb, ref hideProps);
             return;
         }
 
-        // Get the taskbar's actual screen rect to pin it at the correct edge
-        NativeMethods.GetWindowRect(_taskbarHwnd, out var tbRect);
-        int tbW = tbRect.Right - tbRect.Left;
-        int tbH = tbRect.Bottom - tbRect.Top;
-
-        // Use the taskbar's screen position directly (it's pinned, not projected)
-        var props = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
+        foreach (var (hwnd, thumb) in _taskbars)
         {
-            dwFlags = NativeMethods.DWM_TNP_RECTDESTINATION | NativeMethods.DWM_TNP_VISIBLE | NativeMethods.DWM_TNP_OPACITY,
-            rcDestination = new NativeMethods.RECT
+            NativeMethods.GetWindowRect(hwnd, out var r);
+            var props = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
             {
-                Left = tbRect.Left,
-                Top = tbRect.Top,
-                Right = tbRect.Left + tbW,
-                Bottom = tbRect.Top + tbH
-            },
-            fVisible = true,
-            opacity = 255
-        };
-
-        NativeMethods.DwmUpdateThumbnailProperties(_taskbarThumb, ref props);
+                dwFlags = NativeMethods.DWM_TNP_RECTDESTINATION | NativeMethods.DWM_TNP_VISIBLE | NativeMethods.DWM_TNP_OPACITY,
+                rcDestination = new NativeMethods.RECT
+                {
+                    Left   = r.Left   - _overlayOriginX,
+                    Top    = r.Top    - _overlayOriginY,
+                    Right  = r.Right  - _overlayOriginX,
+                    Bottom = r.Bottom - _overlayOriginY
+                },
+                fVisible = true,
+                opacity = 255
+            };
+            NativeMethods.DwmUpdateThumbnailProperties(thumb, ref props);
+        }
     }
 
-    private void RegisterThumbnails()
+    private void RegisterWindowThumbnails()
     {
         // Enumerate in Z-order (EnumWindows returns topmost first).
         // Register bottom-to-top so the topmost window's thumbnail draws last (on top).
@@ -554,7 +566,7 @@ internal sealed class OverviewOverlay : Form
         }
     }
 
-    private void UnregisterThumbnails()
+    private void UnregisterWindowThumbnails()
     {
         foreach (var (_, thumb, _) in _thumbnails)
             NativeMethods.DwmUnregisterThumbnail(thumb);
@@ -564,11 +576,13 @@ internal sealed class OverviewOverlay : Form
     private void UpdateThumbnails()
     {
         UpdateDesktopThumbnail();
-        UpdateTaskbarThumbnail();
+        UpdateTaskbarThumbnails();
 
         foreach (var (hWnd, thumb, world) in _thumbnails)
         {
-            // Project world -> screen using overview camera
+            // Project world -> overlay-local coords. World projects to physical-screen
+            // coords at zoom=1 (when camera == (0,0)); subtract the overlay origin so
+            // the DWM destination rect lives in this window's client space.
             int sx = (int)((world.X - _camX) * _zoom);
             int sy = (int)((world.Y - _camY) * _zoom);
             int sw = Math.Max(1, (int)(world.W * _zoom));
@@ -582,15 +596,19 @@ internal sealed class OverviewOverlay : Form
             int fR = (int)(iR * _zoom);
             int fB = (int)(iB * _zoom);
 
+            int left   = sx + fL - _overlayOriginX;
+            int top    = sy + fT - _overlayOriginY;
+            int right  = sx + sw - fR - _overlayOriginX;
+            int bottom = sy + sh - fB - _overlayOriginY;
+
             var props = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
             {
                 dwFlags = NativeMethods.DWM_TNP_RECTDESTINATION | NativeMethods.DWM_TNP_VISIBLE | NativeMethods.DWM_TNP_OPACITY,
-                rcDestination = new NativeMethods.RECT
-                {
-                    Left = sx + fL,
-                    Top = sy + fT,
-                    Right = sx + sw - fR,
-                    Bottom = sy + sh - fB
+                rcDestination = new NativeMethods.RECT {
+                    Left   = left,
+                    Top    = top,
+                    Right  = right,
+                    Bottom = bottom
                 },
                 fVisible = true,
                 opacity = 255
@@ -640,7 +658,7 @@ internal sealed class OverviewOverlay : Form
     {
         if (_selectedIndex < 0 || _selectedIndex >= _thumbnails.Count) return;
         var (_, _, world) = _thumbnails[_selectedIndex];
-        var screen = Screen.PrimaryScreen!.Bounds;
+        var screen = SystemInformation.VirtualScreen;
 
         // Center overview camera on selected window
         _camX = world.X + world.W / 2 - screen.Width / (2 * _zoom);
