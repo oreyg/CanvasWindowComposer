@@ -72,7 +72,7 @@ internal sealed class FakeWindowApi : IWindowApi
 
     public void UnclipWindow(IntPtr hWnd) => ClippedWindows.Remove(hWnd);
 
-    public void BatchMove(List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)> items)
+    public void BatchMove(List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)> items, bool allowAsync)
     {
         LastBatch.Clear();
         LastBatch.AddRange(items);

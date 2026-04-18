@@ -39,7 +39,7 @@ internal sealed class WindowManager
     /// <summary>
     /// Project all canvas windows to screen. Call after Pan.
     /// </summary>
-    public void Reproject()
+    public void Reproject(bool allowAsync = false)
     {
         var batch = new List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)>();
 
@@ -83,7 +83,7 @@ internal sealed class WindowManager
             _lastScreen[hWnd] = (sx, sy, sw, sh);
         }
 
-        _pos.BatchMove(batch);
+        _pos.BatchMove(batch, allowAsync);
     }
 
     /// <summary>
@@ -211,8 +211,7 @@ internal sealed class WindowManager
             batch.Add((hWnd, sx, sy, sw, sh, false));
         }
 
-        _pos.BatchMove(batch);
-
+        _pos.BatchMove(batch, allowAsync: false);
         _canvas.ClearWindows();
         _lastScreen.Clear();
     }

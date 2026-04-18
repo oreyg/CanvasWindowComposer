@@ -102,7 +102,7 @@ internal sealed class Win32WindowApi : IWindowApi
     public void UnclipWindow(IntPtr hWnd) =>
         NativeMethods.SetWindowRgn(hWnd, IntPtr.Zero, true);
 
-    public void BatchMove(List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)> items)
+    public void BatchMove(List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)> items, bool allowAsync)
     {
         if (items.Count == 0)
             return;
@@ -112,8 +112,9 @@ internal sealed class Win32WindowApi : IWindowApi
 
         foreach (var (hWnd, x, y, w, h, posOnly) in items)
         {
-            uint flags = NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOSENDCHANGING | NativeMethods.SWP_NOREDRAW;
+            uint flags = NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE;
             if (posOnly) flags |= NativeMethods.SWP_NOSIZE;
+            if (allowAsync) flags |= NativeMethods.SWP_ASYNCWINDOWPOS | NativeMethods.SWP_NOSENDCHANGING | NativeMethods.SWP_NOREDRAW;
 
             if (useBatch)
             {

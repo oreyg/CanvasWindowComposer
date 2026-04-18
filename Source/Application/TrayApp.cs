@@ -24,6 +24,7 @@ internal sealed class TrayApp : ApplicationContext
     private readonly WinEventRouter _winEvents;
     private bool _enabled = true;
     private const int ReconcileTimerIntervalMs = 500;
+    private const int ReprojectTimerIntervalMs = 83; // ~12 times a second
     private const long ForegroundSuppressionMs = 500;
     private const int TrayIconSizePx = 32;
     private const float IconLineWidth = 2f;
@@ -31,6 +32,7 @@ internal sealed class TrayApp : ApplicationContext
     private const int IconArrowHead = 3; // ignore focus events shortly after minimize/close/overlay
     private long _lastWindowLostTick;
     private long _lastOverlayClosedTick;
+    private long _lastReprojectTick;
 
     public TrayApp()
     {
@@ -121,7 +123,13 @@ internal sealed class TrayApp : ApplicationContext
     {
         _minimap.NotifyCanvasChanged();
         _overview.SyncCamera();
-        _wm.Reproject();
+
+        long ticksNow = Environment.TickCount64;
+        if (ticksNow - _lastReprojectTick > ReprojectTimerIntervalMs)
+        {
+            _wm.Reproject(allowAsync: true);
+            _lastReprojectTick = ticksNow;
+        }
     }
 
     private void OnCommitted()

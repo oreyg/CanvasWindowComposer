@@ -22,7 +22,7 @@ internal interface IWindowApi
     void SetWindowPosition(IntPtr hWnd, int x, int y, int w, int h, uint flags);
     void ClipWindow(IntPtr hWnd);
     void UnclipWindow(IntPtr hWnd);
-    void BatchMove(List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)> items);
+    void BatchMove(List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)> items, bool allowAsync);
 
     // Enumeration
     void EnumWindows(Func<IntPtr, bool> callback);
