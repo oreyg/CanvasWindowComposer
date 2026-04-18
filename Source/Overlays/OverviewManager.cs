@@ -493,6 +493,51 @@ internal sealed class OverviewManager : IDisposable
         }
     }
 
+    /// <summary>
+    /// Raise the window at the given _visibleWindows index in both the system
+    /// z-order and the overview thumbnail draw order; move its entry to index 0.
+    /// </summary>
+    private void BringWindowToFront(int index)
+    {
+        if (index <= 0 || index >= _visibleWindows.Count) return;
+
+        IntPtr hWnd = _visibleWindows[index].hWnd;
+
+        var entry = _visibleWindows[index];
+        _visibleWindows.RemoveAt(index);
+        _visibleWindows.Insert(0, entry);
+
+        // System z-order — HWND_TOP (0), no move/size/activate
+        NativeMethods.SetWindowPos(hWnd, IntPtr.Zero, 0, 0, 0, 0,
+            NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE);
+
+        // Re-register the window's thumbnail on every pass so it draws last (on top).
+        foreach (var pass in _passes)
+        {
+            int idx = -1;
+            WorldRect world = default;
+            for (int i = 0; i < pass.Thumbnails.Count; i++)
+            {
+                if (pass.Thumbnails[i].hWnd == hWnd)
+                {
+                    idx = i;
+                    world = pass.Thumbnails[i].world;
+                    NativeMethods.DwmUnregisterThumbnail(pass.Thumbnails[i].thumb);
+                    break;
+                }
+            }
+            if (idx < 0) continue;
+
+            pass.Thumbnails.RemoveAt(idx);
+
+            int hr = NativeMethods.DwmRegisterThumbnail(pass.Handle, hWnd, out IntPtr newThumb);
+            if (hr == 0)
+                pass.Thumbnails.Add((hWnd, newThumb, world));
+        }
+
+        UpdateAllThumbnails();
+    }
+
     private void UnregisterWindowThumbnails(OverviewOverlay pass)
     {
         foreach (var (_, thumb, _) in pass.Thumbnails)
@@ -607,14 +652,16 @@ internal sealed class OverviewManager : IDisposable
             double wx = vx / _zoom + _camX;
             double wy = vy / _zoom + _camY;
 
-            for (int i = _visibleWindows.Count - 1; i >= 0; i--)
+            // _visibleWindows is topmost-first — iterate forward to hit the topmost window
+            for (int i = 0; i < _visibleWindows.Count; i++)
             {
                 var (_, world) = _visibleWindows[i];
                 if (wx >= world.X && wx <= world.X + world.W &&
                     wy >= world.Y && wy <= world.Y + world.H)
                 {
+                    BringWindowToFront(i);
                     _draggingWindow = true;
-                    _dragIndex = i;
+                    _dragIndex = 0;
                     _dragStartVx = vx;
                     _dragStartVy = vy;
                     return;
