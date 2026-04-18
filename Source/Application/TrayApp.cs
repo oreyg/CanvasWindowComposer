@@ -139,8 +139,8 @@ internal sealed class TrayApp : ApplicationContext
 
     private void OnCollapseChanged(IntPtr hWnd)
     {
-        _wm.ReprojectWindow(hWnd);
-        _minimap.NotifyCanvasChanged();
+        if (_wm.ReprojectWindow(hWnd))
+            _minimap.NotifyCanvasChanged();
     }
 
     private void OnDragStarted()

@@ -88,14 +88,19 @@ internal sealed class WindowManager
 
     /// <summary>
     /// Project a single window (e.g., after restore from minimized).
+    /// Returns true if the window was reprojected, false if skipped.
     /// </summary>
-    public void ReprojectWindow(IntPtr hWnd)
+    public bool ReprojectWindow(IntPtr hWnd)
     {
+        uint ownPid = (uint)Environment.ProcessId;
+        if (!_pos.IsManageable(hWnd, ownPid))
+            return false;
+
         if (!_canvas.HasWindow(hWnd))
             RegisterWindow(hWnd);
 
         if (!_canvas.Windows.TryGetValue(hWnd, out var world))
-            return;
+            return false;
 
         var (sx, sy) = _canvas.WorldToScreen(world.X, world.Y);
         var (sw, sh) = _canvas.WorldToScreenSize(world.W, world.H);
@@ -104,6 +109,7 @@ internal sealed class WindowManager
             NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
 
         _lastScreen[hWnd] = (sx, sy, sw, sh);
+        return true;
     }
 
     /// <summary>
