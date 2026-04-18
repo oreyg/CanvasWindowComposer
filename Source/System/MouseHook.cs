@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -21,8 +22,17 @@ internal sealed class MouseHook : IDisposable
     private bool _altDrag; // true when drag was initiated with Alt (consume all input)
     private NativeMethods.POINT _lastPoint;
 
-    // Extra HWND treated as a valid pan-initiation surface (e.g., overview in pan mode)
-    public IntPtr ExtraPanSurface { get; set; } = IntPtr.Zero;
+    // Extra HWNDs treated as valid pan-initiation surfaces (e.g., overview in pan mode).
+    // Mutated on the UI thread; read from the hook thread — use HashSet + volatile swap.
+    private volatile HashSet<IntPtr> _extraPanSurfaces = new();
+    public void SetExtraPanSurfaces(IEnumerable<IntPtr> handles)
+    {
+        _extraPanSurfaces = new HashSet<IntPtr>(handles);
+    }
+    public void ClearExtraPanSurfaces()
+    {
+        _extraPanSurfaces = new HashSet<IntPtr>();
+    }
 
     // Accumulated drag delta (written by hook, read by message handler)
     private int _pendingDx;
@@ -216,7 +226,7 @@ internal sealed class MouseHook : IDisposable
             root = hwnd;
 
         // Extra surface (e.g., overview overlay in pan mode)
-        if (ExtraPanSurface != IntPtr.Zero && root == ExtraPanSurface)
+        if (_extraPanSurfaces.Contains(root))
             return true;
 
         IntPtr desktop = NativeMethods.GetDesktopWindow();

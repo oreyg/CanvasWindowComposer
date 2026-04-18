@@ -262,8 +262,9 @@ internal static class NativeMethods
     }
 
     public const uint DWM_TNP_RECTDESTINATION = 0x00000001;
-    public const uint DWM_TNP_VISIBLE = 0x00000008;
+    public const uint DWM_TNP_RECTSOURCE = 0x00000002;
     public const uint DWM_TNP_OPACITY = 0x00000004;
+    public const uint DWM_TNP_VISIBLE = 0x00000008;
 
     // --- WinEvent hooks ---
     [DllImport("user32.dll")]

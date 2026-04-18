@@ -385,6 +385,7 @@ float4 PSMain(VSOut input) : SV_Target
     private float _dpiScale = 1.0f;
     private volatile bool _running;
     private volatile bool _alive = true;
+    private volatile bool _renderThreadIdle = true;
     private readonly System.Threading.ManualResetEventSlim _wakeEvent = new(false);
     private System.Threading.Thread? _renderThread;
 
@@ -450,7 +451,9 @@ float4 PSMain(VSOut input) : SV_Target
     {
         while (_alive)
         {
+            _renderThreadIdle = true;
             _wakeEvent.Wait(); // sleep until Start() signals
+            _renderThreadIdle = false;
             _clock.Restart(); // reset time for fade-in blend
 
             while (_running && _alive)
@@ -460,6 +463,32 @@ float4 PSMain(VSOut input) : SV_Target
             }
 
             _wakeEvent.Reset(); // go back to sleep
+        }
+        _renderThreadIdle = true;
+    }
+
+    /// <summary>Resize swap chain. Pauses render thread, resizes, resumes if was running.</summary>
+    public void Resize(int width, int height)
+    {
+        if (_swapChain == null || (_width == width && _height == height)) return;
+
+        bool wasRunning = _running;
+        _running = false;
+        _wakeEvent.Reset();
+        // Spin until render thread finishes the current frame and goes idle
+        while (!_renderThreadIdle) System.Threading.Thread.Yield();
+
+        _width = width;
+        _height = height;
+        _rtv?.Dispose();
+        _rtv = null;
+        _swapChain.ResizeBuffers(1, (uint)width, (uint)height, Format.R8G8B8A8_UNorm, 0);
+        CreateRenderTarget();
+
+        if (wasRunning)
+        {
+            _running = true;
+            _wakeEvent.Set();
         }
     }
 

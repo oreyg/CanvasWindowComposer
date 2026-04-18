@@ -20,7 +20,7 @@ internal sealed class TrayApp : ApplicationContext
     private Guid _lastDesktopId;
     private readonly MinimapOverlay _minimap;
     private readonly SearchOverlay _search;
-    private readonly OverviewOverlay _overview;
+    private readonly OverviewManager _overview;
     private readonly WinEventRouter _winEvents;
     private bool _enabled = true;
     private const int ReconcileTimerIntervalMs = 500;
@@ -47,7 +47,7 @@ internal sealed class TrayApp : ApplicationContext
         _wm = new WindowManager(_canvas, winApi, _injector, _vds);
         _minimap = new MinimapOverlay(_canvas);
         _search = new SearchOverlay(_canvas, _wm, winApi);
-        _overview = new OverviewOverlay(_canvas, _wm, winApi);
+        _overview = new OverviewManager(_canvas, _wm, winApi);
         _overview.ModeChanged += OnOverviewModeChanged;
         _overview.Warmup();
         _canvas.CameraChanged += OnCameraChanged;
@@ -108,12 +108,14 @@ internal sealed class TrayApp : ApplicationContext
         _winEvents.WindowMoved += OnWindowMoved;
     }
 
-    private void OnOverviewModeChanged(OverviewOverlay.Mode from, OverviewOverlay.Mode to)
+    private void OnOverviewModeChanged(OverviewManager.Mode from, OverviewManager.Mode to)
     {
-        _mouseHook.ExtraPanSurface = (to == OverviewOverlay.Mode.Panning)
-            ? _overview.Handle : IntPtr.Zero;
+        if (to == OverviewManager.Mode.Panning)
+            _mouseHook.SetExtraPanSurfaces(_overview.MonitorHandles);
+        else
+            _mouseHook.ClearExtraPanSurfaces();
 
-        if (to == OverviewOverlay.Mode.Hidden)
+        if (to == OverviewManager.Mode.Hidden)
         {
             _lastOverlayClosedTick = Environment.TickCount64;
             _canvas.Commit();
@@ -151,7 +153,7 @@ internal sealed class TrayApp : ApplicationContext
 
     private void OnDragStarted()
     {
-        _overview.TransitionTo(OverviewOverlay.Mode.Panning);
+        _overview.TransitionTo(OverviewManager.Mode.Panning);
         _minimap.BringToFront();
     }
 
@@ -159,8 +161,8 @@ internal sealed class TrayApp : ApplicationContext
     {
         // A non-pan click while the panning overview is up — close it so the
         // click interacts with the underlying window normally.
-        if (_overview.CurrentMode == OverviewOverlay.Mode.Panning)
-            _overview.TransitionTo(OverviewOverlay.Mode.Hidden);
+        if (_overview.CurrentMode == OverviewManager.Mode.Panning)
+            _overview.TransitionTo(OverviewManager.Mode.Hidden);
     }
 
     private void OnSearchHotkey()
@@ -171,10 +173,10 @@ internal sealed class TrayApp : ApplicationContext
 
     private void OnOverviewHotkey()
     {
-        if (_overview.CurrentMode == OverviewOverlay.Mode.Zooming)
-            _overview.TransitionTo(OverviewOverlay.Mode.Hidden);
+        if (_overview.CurrentMode == OverviewManager.Mode.Zooming)
+            _overview.TransitionTo(OverviewManager.Mode.Hidden);
         else
-            _overview.TransitionTo(OverviewOverlay.Mode.Zooming);
+            _overview.TransitionTo(OverviewManager.Mode.Zooming);
     }
 
     private void OnWindowMinimized(IntPtr hWnd)
@@ -249,10 +251,10 @@ internal sealed class TrayApp : ApplicationContext
 
         if (_mouseHook.TryDrainZoom())
         {
-            if (_overview.CurrentMode == OverviewOverlay.Mode.Zooming)
-                _overview.TransitionTo(OverviewOverlay.Mode.Hidden);
+            if (_overview.CurrentMode == OverviewManager.Mode.Zooming)
+                _overview.TransitionTo(OverviewManager.Mode.Hidden);
             else
-                _overview.TransitionTo(OverviewOverlay.Mode.Zooming);
+                _overview.TransitionTo(OverviewManager.Mode.Zooming);
         }
     }
 
@@ -309,7 +311,6 @@ internal sealed class TrayApp : ApplicationContext
         _winEvents.Dispose();
         _wm.Reset();
         _mouseHook.Dispose();
-        _overview.Close();
         _overview.Dispose();
         _search.Close();
         _minimap.Close();
