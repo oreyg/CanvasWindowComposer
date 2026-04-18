@@ -1,11 +1,8 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
-using System.Linq;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Windows.Forms;
 
 namespace CanvasDesktop;
@@ -14,20 +11,16 @@ internal sealed class SearchOverlay : Form
 {
     private readonly Canvas _canvas;
     private readonly WindowManager _wm;
-    private readonly MinimapOverlay _minimap;
+    private readonly WindowSearchService _searchService;
     private readonly TextBox _searchBox;
     private readonly Label _hintLabel;
     private readonly ListBox _resultsList;
 
-    // Cached process info: pid → (processName, exeName)
-    private readonly Dictionary<uint, (string name, string exe)> _processCache = new();
-
     // Current search results
-    private readonly List<(IntPtr hWnd, string display, WorldRect world)> _results = new();
+    private readonly List<SearchResult> _results = new();
 
     private const int WS_EX_TOOLWINDOW = 0x80;
     private const int WS_EX_TOPMOST = 0x8;
-    private const int WS_EX_NOACTIVATE_FLAG = 0x08000000;
 
     protected override CreateParams CreateParams
     {
@@ -53,11 +46,11 @@ internal sealed class SearchOverlay : Form
     [DllImport("gdi32.dll")]
     private static extern IntPtr CreateRoundRectRgn(int x1, int y1, int x2, int y2, int cx, int cy);
 
-    public SearchOverlay(Canvas canvas, WindowManager wm, MinimapOverlay minimap)
+    public SearchOverlay(Canvas canvas, WindowManager wm, IWindowApi positioner)
     {
         _canvas = canvas;
         _wm = wm;
-        _minimap = minimap;
+        _searchService = new WindowSearchService(canvas, positioner);
 
         // Compute DPI scale factor
         float dpiScale;
@@ -161,7 +154,7 @@ internal sealed class SearchOverlay : Form
             Size = new Size(_formWidth, _formBaseHeight);
             _hintLabel.Visible = true;
             Opacity = OpacityIdle;
-            _processCache.Clear();
+            _searchService.ClearCache();
 
             var screen = Screen.PrimaryScreen!.WorkingArea;
             Location = new Point(
@@ -169,7 +162,7 @@ internal sealed class SearchOverlay : Form
                 screen.Y + (screen.Height - Height) / 3
             );
 
-            ShowRecentWindows();
+            PopulateResults(_searchService.GetRecentWindows());
 
             Show();
             Activate();
@@ -192,61 +185,22 @@ internal sealed class SearchOverlay : Form
 
         if (query.Length == 0)
         {
-            ShowRecentWindows();
+            PopulateResults(_searchService.GetRecentWindows());
             return;
         }
 
-        var scored = new List<(IntPtr hWnd, string display, WorldRect world, int score)>();
-        uint ownPid = (uint)Environment.ProcessId;
-        string qLower = query.ToLowerInvariant();
-        var seen = new HashSet<IntPtr>();
+        PopulateResults(_searchService.Search(query));
+    }
 
-        // Canvas windows
-        foreach (var (hWnd, world) in _canvas.Windows)
+    private void PopulateResults(List<SearchResult> results)
+    {
+        foreach (var r in results)
         {
-            NativeMethods.GetWindowThreadProcessId(hWnd, out uint pid);
-            if (pid == ownPid) continue;
-            seen.Add(hWnd);
-
-            string title = GetWindowTitle(hWnd);
-            var (procName, exeName) = GetProcessInfo(hWnd);
-
-            int score = ScoreMatch(title, procName, exeName, qLower);
-            if (score > 0)
-            {
-                string display = string.IsNullOrEmpty(title)
-                    ? $"{procName} ({exeName})"
-                    : $"{title} — {procName}";
-                scored.Add((hWnd, display, world, score));
-            }
+            _results.Add(r);
+            _resultsList.Items.Add(r.Display);
         }
 
-        // Minimized windows not in canvas
-        NativeMethods.EnumWindows((hWnd, _) =>
-        {
-            if (seen.Contains(hWnd)) return true;
-            if (!WindowManager.IsManageable(hWnd, ownPid, allowMinimized: true)) return true;
-
-            string title = GetWindowTitle(hWnd);
-            if (string.IsNullOrEmpty(title)) return true;
-
-            var (procName, exeName) = GetProcessInfo(hWnd);
-            int score = ScoreMatch(title, procName, exeName, qLower);
-            if (score > 0)
-                scored.Add((hWnd, $"{title} — {procName}", default, score));
-
-            return true;
-        }, IntPtr.Zero);
-
-        var top = scored.OrderByDescending(s => s.score).Take(5).ToList();
-
-        foreach (var item in top)
-        {
-            _results.Add((item.hWnd, item.display, item.world));
-            _resultsList.Items.Add(item.display);
-        }
-
-        int listHeight = Math.Min(top.Count, 5) * _itemHeight;
+        int listHeight = Math.Min(_results.Count, 5) * _itemHeight;
         _resultsList.Size = new Size(_resultsList.Width, listHeight);
         Size = new Size(_formWidth, _formBaseHeight + listHeight + _padding / 2);
 
@@ -293,7 +247,9 @@ internal sealed class SearchOverlay : Form
         if (idx < 0 || idx >= _results.Count)
             return;
 
-        var (hWnd, _, world) = _results[idx];
+        var result = _results[idx];
+        var hWnd = result.HWnd;
+        var world = result.World;
 
         // Restore if minimized or hidden
         int style = NativeMethods.GetWindowLong(hWnd, NativeMethods.GWL_STYLE);
@@ -314,48 +270,7 @@ internal sealed class SearchOverlay : Form
 
         var screen = Screen.PrimaryScreen!.WorkingArea;
         _canvas.CenterOn(world.X, world.Y, world.W, world.H, screen.Width, screen.Height);
-        _wm.Reproject();
-        _minimap.NotifyCanvasChanged();
         HideOverlay();
-    }
-
-    private void ShowRecentWindows()
-    {
-        int count = 0;
-
-        // EnumWindows returns in Z-order (foreground first)
-        NativeMethods.EnumWindows((hWnd, _) =>
-        {
-            if (count >= 5) return false;
-            if (!_canvas.HasWindow(hWnd)) return true;
-
-            string title = GetWindowTitle(hWnd);
-            if (string.IsNullOrEmpty(title)) return true;
-
-            var (procName, _) = GetProcessInfo(hWnd);
-            string display = $"{title} — {procName}";
-
-            var world = _canvas.Windows[hWnd];
-            _results.Add((hWnd, display, world));
-            _resultsList.Items.Add(display);
-            count++;
-            return true;
-        }, IntPtr.Zero);
-
-        int listHeight = Math.Min(_results.Count, 5) * _itemHeight;
-        _resultsList.Size = new Size(_resultsList.Width, listHeight);
-        Size = new Size(_formWidth, _formBaseHeight + listHeight + _padding / 2);
-
-        if (_resultsList.Items.Count > 0)
-            _resultsList.SelectedIndex = 0;
-    }
-
-    private static int ScoreMatch(string title, string procName, string exeName, string query)
-    {
-        if (title.ToLowerInvariant().Contains(query)) return 3;
-        if (procName.ToLowerInvariant().Contains(query)) return 2;
-        if (exeName.ToLowerInvariant().Contains(query)) return 1;
-        return 0;
     }
 
     private void OnDrawItem(object? sender, DrawItemEventArgs e)
@@ -372,38 +287,5 @@ internal sealed class SearchOverlay : Form
         using var textBrush = new SolidBrush(Color.White);
         e.Graphics.DrawString(text, e.Font!, textBrush,
             e.Bounds.X + 6, e.Bounds.Y + 4);
-    }
-
-    private static string GetWindowTitle(IntPtr hWnd)
-    {
-        int len = NativeMethods.GetWindowTextLength(hWnd);
-        if (len <= 0) return "";
-        var sb = new StringBuilder(len + 1);
-        NativeMethods.GetWindowText(hWnd, sb, sb.Capacity);
-        return sb.ToString();
-    }
-
-    private (string name, string exe) GetProcessInfo(IntPtr hWnd)
-    {
-        NativeMethods.GetWindowThreadProcessId(hWnd, out uint pid);
-
-        if (_processCache.TryGetValue(pid, out var cached))
-            return cached;
-
-        string name = "", exe = "";
-        try
-        {
-            using var proc = Process.GetProcessById((int)pid);
-            name = proc.ProcessName;
-            exe = System.IO.Path.GetFileName(proc.MainModule?.FileName ?? name);
-        }
-        catch
-        {
-            name = $"PID {pid}";
-            exe = "";
-        }
-
-        _processCache[pid] = (name, exe);
-        return (name, exe);
     }
 }

@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
 
 namespace CanvasDesktop;
 
@@ -11,6 +10,7 @@ namespace CanvasDesktop;
 internal sealed class WindowManager
 {
     private readonly Canvas _canvas;
+    private readonly IWindowApi _pos;
     private readonly DllInjector _injector;
     private readonly VirtualDesktopService? _vds;
 
@@ -23,9 +23,10 @@ internal sealed class WindowManager
     // Temporarily suspends greedy draw (SetWindowRgn clipping)
     public bool SuspendGreedyDraw { get; set; }
 
-    public WindowManager(Canvas canvas, DllInjector injector, VirtualDesktopService? vds = null)
+    public WindowManager(Canvas canvas, IWindowApi positioner, DllInjector injector, VirtualDesktopService? vds = null)
     {
         _canvas = canvas;
+        _pos = positioner;
         _injector = injector;
         _vds = vds;
     }
@@ -35,8 +36,6 @@ internal sealed class WindowManager
     /// </summary>
     public void Reproject()
     {
-        DiscoverNewWindows();
-
         var batch = new List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)>();
 
         foreach (var (hWnd, world) in _canvas.Windows)
@@ -44,7 +43,7 @@ internal sealed class WindowManager
             if (!IsWindowActive(hWnd))
                 continue;
 
-            int style = NativeMethods.GetWindowLong(hWnd, NativeMethods.GWL_STYLE);
+            int style = _pos.GetWindowStyle(hWnd);
             if ((style & (int)NativeMethods.WS_MAXIMIZE) != 0)
                 continue;
 
@@ -57,7 +56,7 @@ internal sealed class WindowManager
             {
                 if (!wasClipped)
                 {
-                    NativeMethods.SetWindowRgn(hWnd, NativeMethods.CreateRectRgn(0, 0, 0, 0), true);
+                    _pos.ClipWindow(hWnd);
                     _clippedWindows.Add(hWnd);
                     var (px, py) = ClampToScreenEdge(sx, sy, sw, sh);
                     batch.Add((hWnd, px, py, sw, sh, false));
@@ -68,7 +67,7 @@ internal sealed class WindowManager
 
             if (wasClipped)
             {
-                NativeMethods.SetWindowRgn(hWnd, IntPtr.Zero, true);
+                _pos.UnclipWindow(hWnd);
                 _clippedWindows.Remove(hWnd);
             }
 
@@ -76,7 +75,7 @@ internal sealed class WindowManager
             _lastScreen[hWnd] = (sx, sy, sw, sh);
         }
 
-        BatchSetPositions(batch);
+        _pos.BatchMove(batch);
     }
 
     /// <summary>
@@ -93,7 +92,7 @@ internal sealed class WindowManager
         var (sx, sy) = _canvas.WorldToScreen(world.X, world.Y);
         var (sw, sh) = _canvas.WorldToScreenSize(world.W, world.H);
 
-        NativeMethods.SetWindowPos(hWnd, IntPtr.Zero, sx, sy, sw, sh,
+        _pos.SetWindowPosition(hWnd, sx, sy, sw, sh,
             NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
 
         _lastScreen[hWnd] = (sx, sy, sw, sh);
@@ -117,9 +116,7 @@ internal sealed class WindowManager
         if (!_lastScreen.TryGetValue(hWnd, out var last))
             return;
 
-        NativeMethods.GetWindowRect(hWnd, out var rect);
-        int ax = rect.Left, ay = rect.Top;
-        int aw = rect.Right - rect.Left, ah = rect.Bottom - rect.Top;
+        var (ax, ay, aw, ah) = _pos.GetWindowRect(hWnd);
 
         if (Math.Abs(ax - last.x) <= 2 && Math.Abs(ay - last.y) <= 2 &&
             Math.Abs(aw - last.w) <= 2 && Math.Abs(ah - last.h) <= 2)
@@ -140,7 +137,7 @@ internal sealed class WindowManager
         var stale = new List<IntPtr>();
         foreach (var hWnd in _canvas.Windows.Keys)
         {
-            if (!NativeMethods.IsWindowVisible(hWnd))
+            if (!_pos.IsWindowVisible(hWnd))
                 stale.Add(hWnd);
         }
         foreach (var hWnd in stale)
@@ -154,33 +151,31 @@ internal sealed class WindowManager
     public void UnclipAll()
     {
         foreach (var hWnd in _clippedWindows)
-            NativeMethods.SetWindowRgn(hWnd, IntPtr.Zero, true);
+            _pos.UnclipWindow(hWnd);
     }
 
     /// <summary>Re-clip windows that should be off-screen.</summary>
     public void ReclipAll()
     {
         foreach (var hWnd in _clippedWindows)
-            NativeMethods.SetWindowRgn(hWnd, NativeMethods.CreateRectRgn(0, 0, 0, 0), true);
+            _pos.ClipWindow(hWnd);
     }
 
     /// <summary>Register a new window into the canvas from its screen position.</summary>
     public void RegisterWindow(IntPtr hWnd)
     {
         uint ownPid = (uint)Environment.ProcessId;
-        if (!IsManageable(hWnd, ownPid))
+        if (!_pos.IsManageable(hWnd, ownPid))
             return;
 
-        NativeMethods.GetWindowRect(hWnd, out var rect);
-        int sx = rect.Left, sy = rect.Top;
-        int sw = rect.Right - rect.Left, sh = rect.Bottom - rect.Top;
+        var (sx, sy, sw, sh) = _pos.GetWindowRect(hWnd);
 
         _canvas.SetWindowFromScreen(hWnd, sx, sy, sw, sh);
         _lastScreen[hWnd] = (sx, sy, sw, sh);
 
         if (!AppConfig.DisableDllInjection)
         {
-            NativeMethods.GetWindowThreadProcessId(hWnd, out uint pid);
+            uint pid = _pos.GetWindowProcessId(hWnd);
             if (!_injector.IsInjected(pid))
                 _injector.Inject(pid);
         }
@@ -190,7 +185,7 @@ internal sealed class WindowManager
     public void Reset()
     {
         foreach (var hWnd in _clippedWindows)
-            NativeMethods.SetWindowRgn(hWnd, IntPtr.Zero, true);
+            _pos.UnclipWindow(hWnd);
         _clippedWindows.Clear();
 
         _canvas.ResetCamera();
@@ -208,7 +203,7 @@ internal sealed class WindowManager
             batch.Add((hWnd, sx, sy, sw, sh, false));
         }
 
-        BatchSetPositions(batch);
+        _pos.BatchMove(batch);
 
         _canvas.ClearWindows();
         _lastScreen.Clear();
@@ -216,19 +211,19 @@ internal sealed class WindowManager
 
     // ==================== PRIVATE ====================
 
-    private void DiscoverNewWindows()
+    public void DiscoverNewWindows()
     {
         uint ownPid = (uint)Environment.ProcessId;
         var toAdd = new List<IntPtr>();
 
-        NativeMethods.EnumWindows((hWnd, _) =>
+        _pos.EnumWindows(hWnd =>
         {
             if (_canvas.HasWindow(hWnd)) return true;
-            if (!IsManageable(hWnd, ownPid)) return true;
+            if (!_pos.IsManageable(hWnd, ownPid)) return true;
             if (_vds != null && !_vds.IsOnCurrentDesktop(hWnd)) return true;
             toAdd.Add(hWnd);
             return true;
-        }, IntPtr.Zero);
+        });
 
         foreach (var hWnd in toAdd)
             RegisterWindow(hWnd);
@@ -236,9 +231,9 @@ internal sealed class WindowManager
 
     private bool IsWindowActive(IntPtr hWnd)
     {
-        if (!NativeMethods.IsWindowVisible(hWnd))
+        if (!_pos.IsWindowVisible(hWnd))
             return false;
-        int style = NativeMethods.GetWindowLong(hWnd, NativeMethods.GWL_STYLE);
+        int style = _pos.GetWindowStyle(hWnd);
         return (style & (int)NativeMethods.WS_MINIMIZE) == 0;
     }
 
@@ -246,135 +241,56 @@ internal sealed class WindowManager
     /// Clamp window position so it sits just outside the nearest screen edge.
     /// This hides DWM border/shadow effects that would bleed onto the visible area.
     /// </summary>
-    private static (int x, int y) ClampToScreenEdge(int sx, int sy, int sw, int sh)
+    private (int x, int y) ClampToScreenEdge(int sx, int sy, int sw, int sh)
     {
+        var screens = _pos.GetScreenWorkingAreas();
+
         // Find the nearest screen
         int bestDist = int.MaxValue;
-        var nearest = System.Windows.Forms.Screen.PrimaryScreen!.WorkingArea;
+        var nearest = screens.Count > 0 ? screens[0] : (0, 0, 1920, 1080);
 
-        foreach (var screen in System.Windows.Forms.Screen.AllScreens)
+        foreach (var (left, top, width, height) in screens)
         {
-            var wa = screen.WorkingArea;
             int cx = sx + sw / 2;
             int cy = sy + sh / 2;
-            int scx = wa.Left + wa.Width / 2;
-            int scy = wa.Top + wa.Height / 2;
+            int scx = left + width / 2;
+            int scy = top + height / 2;
             int dist = Math.Abs(cx - scx) + Math.Abs(cy - scy);
             if (dist < bestDist)
             {
                 bestDist = dist;
-                nearest = wa;
+                nearest = (left, top, width, height);
             }
         }
+
+        int nLeft = nearest.Item1;
+        int nTop = nearest.Item2;
+        int nRight = nLeft + nearest.Item3;
+        int nBottom = nTop + nearest.Item4;
 
         // Park 1px inside the nearest edge so the OS considers it "on-screen"
         int px = sx, py = sy;
 
-        if (sx + sw <= nearest.Left)   px = nearest.Left - sw + 1;
-        else if (sx >= nearest.Right)  px = nearest.Right - 1;
+        if (sx + sw <= nLeft)   px = nLeft - sw + 1;
+        else if (sx >= nRight)  px = nRight - 1;
 
-        if (sy + sh <= nearest.Top)    py = nearest.Top - sh + 1;
-        else if (sy >= nearest.Bottom) py = nearest.Bottom - 1;
+        if (sy + sh <= nTop)    py = nTop - sh + 1;
+        else if (sy >= nBottom) py = nBottom - 1;
 
         return (px, py);
     }
 
     /// <summary>Check if a rect overlaps with any monitor's working area (excludes taskbars).</summary>
-    private static bool IsOnAnyScreen(int rx, int ry, int rw, int rh)
+    private bool IsOnAnyScreen(int rx, int ry, int rw, int rh)
     {
-        foreach (var screen in System.Windows.Forms.Screen.AllScreens)
+        foreach (var (left, top, width, height) in _pos.GetScreenWorkingAreas())
         {
-            var wa = screen.WorkingArea;
-            if (rx + rw > wa.Left && rx < wa.Right &&
-                ry + rh > wa.Top  && ry < wa.Bottom)
+            int right = left + width;
+            int bottom = top + height;
+            if (rx + rw > left && rx < right &&
+                ry + rh > top  && ry < bottom)
                 return true;
         }
         return false;
-    }
-
-    // ==================== WINDOW FILTERING & BATCH ====================
-
-    private static readonly HashSet<string> ExcludedClasses = new()
-    {
-        "Progman",
-        "WorkerW",
-        "Shell_TrayWnd",
-        "Shell_SecondaryTrayWnd",
-        "NotifyIconOverflowWindow",
-        "Windows.UI.Core.CoreWindow"
-    };
-
-    /// <summary>Check whether a window should be managed by the canvas.</summary>
-    public static bool IsManageable(IntPtr hWnd, uint ownPid, bool allowMinimized = false)
-    {
-        if (!NativeMethods.IsWindowVisible(hWnd))
-            return false;
-
-        NativeMethods.GetWindowThreadProcessId(hWnd, out uint pid);
-        if (pid == ownPid)
-            return false;
-
-        int style = NativeMethods.GetWindowLong(hWnd, NativeMethods.GWL_STYLE);
-        int exStyle = NativeMethods.GetWindowLong(hWnd, NativeMethods.GWL_EXSTYLE);
-
-        if ((style & (int)NativeMethods.WS_MAXIMIZE) != 0)
-            return false;
-        if (!allowMinimized && (style & (int)NativeMethods.WS_MINIMIZE) != 0)
-            return false;
-
-        if ((exStyle & (int)NativeMethods.WS_EX_TOOLWINDOW) != 0 &&
-            (exStyle & (int)NativeMethods.WS_EX_APPWINDOW) == 0)
-            return false;
-
-        if (NativeMethods.GetParent(hWnd) != IntPtr.Zero)
-            return false;
-
-        if (NativeMethods.DwmGetWindowAttribute(hWnd, NativeMethods.DWMWA_CLOAKED,
-                out int cloaked, sizeof(int)) == 0 && cloaked != 0)
-            return false;
-
-        var className = new StringBuilder(256);
-        NativeMethods.GetClassName(hWnd, className, 256);
-        if (ExcludedClasses.Contains(className.ToString()))
-            return false;
-
-        return true;
-    }
-
-    /// <summary>
-    /// Batch-apply positions/sizes. Falls back to individual SetWindowPos if DeferWindowPos fails.
-    /// </summary>
-    private static void BatchSetPositions(
-        List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)> items)
-    {
-        if (items.Count == 0)
-            return;
-
-        IntPtr hdwp = NativeMethods.BeginDeferWindowPos(items.Count);
-        bool useBatch = hdwp != IntPtr.Zero;
-
-        foreach (var (hWnd, x, y, w, h, posOnly) in items)
-        {
-            uint flags = NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE;
-            if (posOnly) flags |= NativeMethods.SWP_NOSIZE;
-
-            if (useBatch)
-            {
-                hdwp = NativeMethods.DeferWindowPos(hdwp, hWnd, IntPtr.Zero,
-                    x, y, w, h, flags);
-                if (hdwp == IntPtr.Zero)
-                {
-                    useBatch = false;
-                    NativeMethods.SetWindowPos(hWnd, IntPtr.Zero, x, y, w, h, flags);
-                }
-            }
-            else
-            {
-                NativeMethods.SetWindowPos(hWnd, IntPtr.Zero, x, y, w, h, flags);
-            }
-        }
-
-        if (useBatch && hdwp != IntPtr.Zero)
-            NativeMethods.EndDeferWindowPos(hdwp);
     }
 }

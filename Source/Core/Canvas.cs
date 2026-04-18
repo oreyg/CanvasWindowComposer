@@ -62,16 +62,21 @@ internal sealed class Canvas
 
     // ==================== CAMERA ====================
 
+    /// <summary>Raised when the camera moves. Subscribers should reproject windows and update UI.</summary>
+    public event Action? CameraChanged;
+
     public void SetCamera(double camX, double camY)
     {
         _camX = camX;
         _camY = camY;
+        CameraChanged?.Invoke();
     }
 
     public void Pan(int screenDx, int screenDy)
     {
         _camX -= screenDx / _zoom;
         _camY -= screenDy / _zoom;
+        CameraChanged?.Invoke();
     }
 
     /// <summary>Center the camera on a world-space rectangle.</summary>
@@ -79,6 +84,7 @@ internal sealed class Canvas
     {
         _camX = worldX + worldW / 2 - screenW / (2 * _zoom);
         _camY = worldY + worldH / 2 - screenH / (2 * _zoom);
+        CameraChanged?.Invoke();
     }
 
     /// <summary>Save current camera + world map state.</summary>
@@ -105,6 +111,7 @@ internal sealed class Canvas
             foreach (var (k, v) in state.Windows)
                 _windows[k] = v;
         }
+        CameraChanged?.Invoke();
     }
 
     /// <summary>Check if a window's projected screen rect overlaps with the screen.</summary>

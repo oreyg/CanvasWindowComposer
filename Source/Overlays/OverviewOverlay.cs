@@ -13,7 +13,7 @@ internal sealed class OverviewOverlay : Form
 {
     private readonly Canvas _mainCanvas;
     private readonly WindowManager _wm;
-    private readonly MinimapOverlay _minimap;
+    private readonly IWindowApi _pos;
     private GridRenderer? _grid;
 
     /// <summary>Raised when the overview is hidden (for foreground suppression).</summary>
@@ -64,11 +64,11 @@ internal sealed class OverviewOverlay : Form
         }
     }
 
-    public OverviewOverlay(Canvas mainCanvas, WindowManager wm, MinimapOverlay minimap)
+    public OverviewOverlay(Canvas mainCanvas, WindowManager wm, IWindowApi positioner)
     {
         _mainCanvas = mainCanvas;
         _wm = wm;
-        _minimap = minimap;
+        _pos = positioner;
 
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
@@ -159,9 +159,7 @@ internal sealed class OverviewOverlay : Form
         if (action == CloseAction.SyncCamera)
         {
             var (vx, vy) = ViewportCamera;
-            _mainCanvas.SetCamera(vx, vy);
-            _wm.Reproject();
-            _minimap.NotifyCanvasChanged();
+            _mainCanvas.SetCamera(vx, vy); // fires CameraChanged → Reproject + minimap
         }
 
         _wm.SuspendGreedyDraw = false;
@@ -180,8 +178,6 @@ internal sealed class OverviewOverlay : Form
 
         var screen = Screen.PrimaryScreen!.WorkingArea;
         _mainCanvas.CenterOn(world.X, world.Y, world.W, world.H, screen.Width, screen.Height);
-        _wm.Reproject();
-        _minimap.NotifyCanvasChanged();
         NativeMethods.SetForegroundWindow(hWnd);
         HideOverview(CloseAction.KeepCamera);
     }
@@ -223,12 +219,12 @@ internal sealed class OverviewOverlay : Form
         // Enumerate in Z-order (EnumWindows returns topmost first).
         // Register bottom-to-top so the topmost window's thumbnail draws last (on top).
         var zOrder = new List<IntPtr>();
-        NativeMethods.EnumWindows((hWnd, _) =>
+        _pos.EnumWindows(hWnd =>
         {
             if (_mainCanvas.HasWindow(hWnd))
                 zOrder.Add(hWnd);
             return true;
-        }, IntPtr.Zero);
+        });
 
         // Reverse: register bottom windows first, topmost last
         for (int i = zOrder.Count - 1; i >= 0; i--)

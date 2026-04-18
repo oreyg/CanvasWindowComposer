@@ -25,17 +25,13 @@ internal sealed class InertiaEngine : IDisposable
     private readonly ManualResetEventSlim _wakeEvent = new(false);
     private readonly Thread _thread;
     private readonly Canvas _canvas;
-    private readonly WindowManager _wm;
-    private MinimapOverlay? _minimap;
     private System.Windows.Forms.Control? _uiControl;
 
-    public void SetMinimap(MinimapOverlay minimap) => _minimap = minimap;
     public void SetUiControl(System.Windows.Forms.Control control) => _uiControl = control;
 
-    public InertiaEngine(Canvas canvas, WindowManager wm)
+    public InertiaEngine(Canvas canvas)
     {
         _canvas = canvas;
-        _wm = wm;
         _thread = new Thread(ThreadLoop) { IsBackground = true, Name = "Inertia" };
         _thread.Start();
     }
@@ -140,9 +136,7 @@ internal sealed class InertiaEngine : IDisposable
                     _uiControl.Invoke(() =>
                     {
                         if (!_animating) return;
-                        _canvas.Pan(cdx, cdy);
-                        _wm.Reproject();
-                        _minimap?.NotifyCanvasChanged();
+                        _canvas.Pan(cdx, cdy); // fires CameraChanged → Reproject + minimap
                     });
                 }
             }

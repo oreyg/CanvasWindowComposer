@@ -22,16 +22,11 @@ internal sealed class TrayApp : ApplicationContext
     private readonly MinimapOverlay _minimap;
     private readonly SearchOverlay _search;
     private readonly OverviewOverlay _overview;
+    private readonly WinEventRouter _winEvents;
     private bool _enabled = true;
     private const long ForegroundSuppressionMs = 500; // ignore focus events shortly after minimize/close/overlay
     private long _lastWindowLostTick;
     private long _lastOverlayClosedTick;
-    private IntPtr _winEventHook_System_Minimize;
-    private IntPtr _winEventHook_Object_Destroy;
-    private IntPtr _winEventHook_System_Foreground;
-    private IntPtr _winEventHook_System_Switch;
-    private IntPtr _winEventHook_Object_LocationChange;
-    private readonly NativeMethods.WinEventDelegate _winEventProc;
 
     public TrayApp()
     {
@@ -42,15 +37,16 @@ internal sealed class TrayApp : ApplicationContext
         _vds = new VirtualDesktopService();
         _lastDesktopId = _vds.CurrentDesktopId;
         _canvas = new Canvas();
-        _wm = new WindowManager(_canvas, _injector, _vds);
+        var winApi = new Win32WindowApi();
+        _wm = new WindowManager(_canvas, winApi, _injector, _vds);
         _minimap = new MinimapOverlay(_canvas);
-        _search = new SearchOverlay(_canvas, _wm, _minimap);
-        _overview = new OverviewOverlay(_canvas, _wm, _minimap);
+        _search = new SearchOverlay(_canvas, _wm, winApi);
+        _overview = new OverviewOverlay(_canvas, _wm, winApi);
         _overview.OverviewClosed += () => _lastOverlayClosedTick = Environment.TickCount64;
         _overview.Warmup();
-        _inertia = new InertiaEngine(_canvas, _wm);
-        _inertia.SetMinimap(_minimap);
+        _inertia = new InertiaEngine(_canvas);
         _inertia.SetUiControl(_minimap);
+        _canvas.CameraChanged += () => { _wm.Reproject(); _minimap.NotifyCanvasChanged(); };
         _mouseHook = new MouseHook();
 
         _mouseHook.DragStarted += () => _inertia.Cancel();
@@ -92,114 +88,45 @@ internal sealed class TrayApp : ApplicationContext
             Visible = true
         };
 
+        _wm.DiscoverNewWindows();
         _wm.Reproject();
 
         _mouseHook.Install();
 
-        _winEventProc = OnWinEvent;
-        _winEventHook_System_Minimize = NativeMethods.SetWinEventHook(
-            NativeMethods.EVENT_SYSTEM_MINIMIZESTART,
-            NativeMethods.EVENT_SYSTEM_MINIMIZEEND,
-            IntPtr.Zero,
-            _winEventProc,
-            0, 0,
-            NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
-        _winEventHook_System_Foreground = NativeMethods.SetWinEventHook(
-            NativeMethods.EVENT_SYSTEM_FOREGROUND,
-            NativeMethods.EVENT_SYSTEM_FOREGROUND,
-            IntPtr.Zero,
-            _winEventProc,
-            0, 0,
-            NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
-        _winEventHook_System_Switch = NativeMethods.SetWinEventHook(
-            NativeMethods.EVENT_SYSTEM_SWITCHSTART,
-            NativeMethods.EVENT_SYSTEM_SWITCHEND,
-            IntPtr.Zero,
-            _winEventProc,
-            0, 0,
-            NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
-        _winEventHook_Object_Destroy = NativeMethods.SetWinEventHook(
-            NativeMethods.EVENT_OBJECT_DESTROY,
-            NativeMethods.EVENT_OBJECT_DESTROY,
-            IntPtr.Zero,
-            _winEventProc,
-            0, 0,
-            NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
-        _winEventHook_Object_LocationChange = NativeMethods.SetWinEventHook(
-            NativeMethods.EVENT_OBJECT_LOCATIONCHANGE,
-            NativeMethods.EVENT_OBJECT_LOCATIONCHANGE,
-            IntPtr.Zero,
-            _winEventProc,
-            0, 0,
-            NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
+        _winEvents = new WinEventRouter();
+        _winEvents.WindowLost += _ => _lastWindowLostTick = Environment.TickCount64;
+        _winEvents.AltTabStarted += () => { _wm.SuspendGreedyDraw = true; _wm.UnclipAll(); };
+        _winEvents.AltTabEnded += () => { _wm.SuspendGreedyDraw = false; _wm.ReclipAll(); };
+        _winEvents.WindowRestored += hWnd => _wm.ReprojectWindow(hWnd);
+        _winEvents.WindowFocused += OnWindowFocused;
+        _winEvents.WindowMoved += hWnd => { if (_canvas.HasWindow(hWnd)) _wm.ReconcileWindow(hWnd); };
     }
 
-    private void OnWinEvent(IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
-        int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
+    private void OnWindowFocused(IntPtr hwnd)
     {
-        switch (eventType)
+        long now = Environment.TickCount64;
+        if (now - _lastWindowLostTick < ForegroundSuppressionMs ||
+            now - _lastOverlayClosedTick < ForegroundSuppressionMs)
+            return;
+
+        if (_canvas.HasWindow(hwnd))
         {
-            case NativeMethods.EVENT_SYSTEM_MINIMIZESTART:
-            case NativeMethods.EVENT_OBJECT_DESTROY:
-                _lastWindowLostTick = Environment.TickCount64;
-                break;
-
-            case NativeMethods.EVENT_SYSTEM_SWITCHSTART:
-                // Alt+Tab switcher appeared — unclip so thumbnails show content
-                _wm.SuspendGreedyDraw = true;
-                _wm.UnclipAll();
-                break;
-
-            case NativeMethods.EVENT_SYSTEM_SWITCHEND:
-                // Alt+Tab switcher closed — re-enable clipping
-                _wm.SuspendGreedyDraw = false;
-                _wm.ReclipAll();
-                break;
-
-            case NativeMethods.EVENT_SYSTEM_MINIMIZEEND:
-                _wm.ReprojectWindow(hwnd);
-                break;
-
-            case NativeMethods.EVENT_SYSTEM_FOREGROUND:
-                // Window got focus — if it's off-screen, center camera on it.
-                // Skip if a window was just minimized — the OS is auto-focusing
-                // the next window in Z-order, not the user switching.
-                long now = Environment.TickCount64;
-                if (now - _lastWindowLostTick < ForegroundSuppressionMs ||
-                    now - _lastOverlayClosedTick < ForegroundSuppressionMs)
-                    break;
-
-                if (_canvas.HasWindow(hwnd))
-                {
-                    var screen = Screen.PrimaryScreen!.WorkingArea;
-                    if (!_canvas.IsWindowOnScreen(hwnd, screen.Width, screen.Height))
-                    {
-                        var world = _canvas.Windows[hwnd];
-                        _canvas.CenterOn(world.X, world.Y, world.W, world.H, screen.Width, screen.Height);
-                        _wm.Reproject();
-                        _minimap.NotifyCanvasChanged();
-                    }
-                }
-                break;
-
-            case NativeMethods.EVENT_OBJECT_LOCATIONCHANGE:
-                // Only top-level window moves, not child controls
-                if (idObject == NativeMethods.OBJID_WINDOW && _canvas.HasWindow(hwnd))
-                    _wm.ReconcileWindow(hwnd);
-                break;
+            var screen = Screen.PrimaryScreen!.WorkingArea;
+            if (!_canvas.IsWindowOnScreen(hwnd, screen.Width, screen.Height))
+            {
+                var world = _canvas.Windows[hwnd];
+                _canvas.CenterOn(world.X, world.Y, world.W, world.H, screen.Width, screen.Height);
+            }
         }
     }
 
     /// <summary>Called immediately via WM_CANVAS_INPUT when mouse input arrives.</summary>
     private void OnCanvasInput()
     {
-        bool moved = false;
-
         if (_mouseHook.TryDrainDelta(out int dx, out int dy))
         {
-            _canvas.Pan(dx, dy);
+            _canvas.Pan(dx, dy); // fires CameraChanged → Reproject + minimap
             _inertia.RecordDelta(dx, dy);
-            moved = true;
         }
 
         if (_mouseHook.TryDrainDragEnded())
@@ -210,12 +137,6 @@ internal sealed class TrayApp : ApplicationContext
             _inertia.Cancel();
             _overview.Toggle();
         }
-
-        if (moved)
-        {
-            _wm.Reproject();
-            _minimap.NotifyCanvasChanged();
-        }
     }
 
     /// <summary>Background timer for inertia, reconcile, VD polling.</summary>
@@ -224,7 +145,7 @@ internal sealed class TrayApp : ApplicationContext
         if (_vds.CheckDesktopChanged())
             OnDesktopSwitched();
 
-        _wm.Reconcile();
+        _wm.DiscoverNewWindows();
         _wm.RemoveStale();
     }
 
@@ -232,10 +153,6 @@ internal sealed class TrayApp : ApplicationContext
     {
         _inertia.Cancel();
 
-        // Save current canvas state for the previous desktop
-        // (we need to find the previous ID — it was stored before CheckDesktopChanged updated it)
-        // Since CheckDesktopChanged already updated _vds.CurrentDesktopId to the NEW one,
-        // we save under whatever key we last stored. Use a tracking field.
         if (_lastDesktopId != Guid.Empty)
         {
             _wm.Reset();
@@ -244,12 +161,11 @@ internal sealed class TrayApp : ApplicationContext
 
         _lastDesktopId = _vds.CurrentDesktopId;
 
-        // Load state for new desktop, or start fresh
         if (_desktopStates.TryGetValue(_lastDesktopId, out var state))
-            _canvas.LoadState(state);
+            _canvas.LoadState(state); // fires CameraChanged → Reproject + minimap
+        else
+            _wm.Reproject(); // discover windows on fresh desktop
 
-        // Always reproject to discover windows and apply state
-        _wm.Reproject();
         _minimap.ShowBriefly();
     }
 
@@ -274,16 +190,7 @@ internal sealed class TrayApp : ApplicationContext
         _bgTimer.Stop();
         _bgTimer.Dispose();
         _msgWindow.Dispose();
-        if (_winEventHook_System_Minimize != IntPtr.Zero)
-            NativeMethods.UnhookWinEvent(_winEventHook_System_Minimize);
-        if (_winEventHook_System_Foreground != IntPtr.Zero)
-            NativeMethods.UnhookWinEvent(_winEventHook_System_Foreground);
-        if (_winEventHook_System_Switch != IntPtr.Zero)
-            NativeMethods.UnhookWinEvent(_winEventHook_System_Switch);
-        if (_winEventHook_Object_Destroy != IntPtr.Zero)
-            NativeMethods.UnhookWinEvent(_winEventHook_Object_Destroy);
-        if (_winEventHook_Object_LocationChange != IntPtr.Zero)
-            NativeMethods.UnhookWinEvent(_winEventHook_Object_LocationChange);
+        _winEvents.Dispose();
         _inertia.Dispose(); // cancel + join thread
         _wm.Reset();
         _mouseHook.Dispose();
