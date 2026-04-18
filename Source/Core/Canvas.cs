@@ -12,6 +12,7 @@ internal struct CanvasState
 {
     public double CamX, CamY, Zoom;
     public Dictionary<IntPtr, WorldRect> Windows;
+    public HashSet<IntPtr>? Collapsed;
 }
 
 /// <summary>
@@ -20,15 +21,20 @@ internal struct CanvasState
 /// </summary>
 internal sealed class Canvas
 {
+    private const int MinWindowWidth = 200;
+    private const int MinWindowHeight = 100;
+
     private double _camX, _camY;
     private double _zoom = 1.0;
 
     private readonly Dictionary<IntPtr, WorldRect> _windows = new();
+    private readonly HashSet<IntPtr> _collapsed = new();
 
     public double CamX => _camX;
     public double CamY => _camY;
     public double Zoom => _zoom;
     public IReadOnlyDictionary<IntPtr, WorldRect> Windows => _windows;
+    public IReadOnlySet<IntPtr> CollapsedWindows => _collapsed;
     // ==================== PROJECTIONS ====================
 
     public (int x, int y) WorldToScreen(double wx, double wy)
@@ -42,8 +48,8 @@ internal sealed class Canvas
     public (int w, int h) WorldToScreenSize(double ww, double wh)
     {
         return (
-            Math.Max(200, (int)Math.Ceiling(ww * _zoom)),
-            Math.Max(100, (int)Math.Ceiling(wh * _zoom))
+            Math.Max(MinWindowWidth, (int)Math.Ceiling(ww * _zoom)),
+            Math.Max(MinWindowHeight, (int)Math.Ceiling(wh * _zoom))
         );
     }
 
@@ -64,6 +70,9 @@ internal sealed class Canvas
 
     /// <summary>Raised when the camera moves. Subscribers should reproject windows and update UI.</summary>
     public event Action? CameraChanged;
+
+    /// <summary>Raised when a window is collapsed or expanded.</summary>
+    public event Action<IntPtr>? CollapseChanged;
 
     public void SetCamera(double camX, double camY)
     {
@@ -95,7 +104,8 @@ internal sealed class Canvas
             CamX = _camX,
             CamY = _camY,
             Zoom = _zoom,
-            Windows = new Dictionary<IntPtr, WorldRect>(_windows)
+            Windows = new Dictionary<IntPtr, WorldRect>(_windows),
+            Collapsed = new HashSet<IntPtr>(_collapsed)
         };
     }
 
@@ -106,10 +116,16 @@ internal sealed class Canvas
         _camY = state.CamY;
         _zoom = state.Zoom;
         _windows.Clear();
+        _collapsed.Clear();
         if (state.Windows != null)
         {
             foreach (var (k, v) in state.Windows)
                 _windows[k] = v;
+        }
+        if (state.Collapsed != null)
+        {
+            foreach (var hWnd in state.Collapsed)
+                _collapsed.Add(hWnd);
         }
         CameraChanged?.Invoke();
     }
@@ -160,16 +176,19 @@ internal sealed class Canvas
 
         double minX = double.MaxValue, minY = double.MaxValue;
         double maxX = double.MinValue, maxY = double.MinValue;
+        bool any = false;
 
-        foreach (var (_, r) in _windows)
+        foreach (var (hWnd, r) in _windows)
         {
+            if (_collapsed.Contains(hWnd)) continue;
+            any = true;
             if (r.X < minX) minX = r.X;
             if (r.Y < minY) minY = r.Y;
             if (r.X + r.W > maxX) maxX = r.X + r.W;
             if (r.Y + r.H > maxY) maxY = r.Y + r.H;
         }
 
-        return (minX, minY, maxX, maxY);
+        return any ? (minX, minY, maxX, maxY) : null;
     }
 
     /// <summary>
@@ -184,7 +203,34 @@ internal sealed class Canvas
 
     public bool HasWindow(IntPtr hWnd) => _windows.ContainsKey(hWnd);
 
-    public void RemoveWindow(IntPtr hWnd) => _windows.Remove(hWnd);
+    public void RemoveWindow(IntPtr hWnd)
+    {
+        _windows.Remove(hWnd);
+        _collapsed.Remove(hWnd);
+    }
 
-    public void ClearWindows() => _windows.Clear();
+    public void ClearWindows()
+    {
+        _windows.Clear();
+        _collapsed.Clear();
+    }
+
+    // ==================== COLLAPSED STATE ====================
+
+    public void CollapseWindow(IntPtr hWnd)
+    {
+        if (_collapsed.Add(hWnd))
+            CollapseChanged?.Invoke(hWnd);
+    }
+
+    public void ExpandWindow(IntPtr hWnd)
+    {
+        if (_collapsed.Remove(hWnd))
+            CollapseChanged?.Invoke(hWnd);
+    }
+
+    public bool IsCollapsed(IntPtr hWnd)
+    {
+        return _collapsed.Contains(hWnd);
+    }
 }

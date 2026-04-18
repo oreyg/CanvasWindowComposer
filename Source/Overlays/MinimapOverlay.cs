@@ -18,6 +18,12 @@ internal sealed class MinimapOverlay : Form
     private const int InnerPadding = 8;
     private const double ExtentsPadding = 0.10; // 10% padding around extents
     private const int FadeDelayMs = 2000;
+    private const int FadeTickIntervalMs = 100;
+    private const double FadeOpacityStep = 0.15;
+    private const double FadeOpacityThreshold = 0.05;
+    private const double MinimapOpacity = 0.75;
+    private const double MinimapBorderPx = 2.0;
+    private const int MinRectSizePx = 2;
 
     private readonly Canvas _canvas;
     private readonly Timer _fadeTimer;
@@ -53,12 +59,12 @@ internal sealed class MinimapOverlay : Form
         TopMost = true;
         Size = new Size(MapWidth + InnerPadding * 2, MapHeight + InnerPadding * 2);
         BackColor = Color.Black;
-        Opacity = 0.75;
+        Opacity = MinimapOpacity;
         DoubleBuffered = true;
 
         PositionOnScreen();
 
-        _fadeTimer = new Timer { Interval = 100 };
+        _fadeTimer = new Timer { Interval = FadeTickIntervalMs };
         _fadeTimer.Tick += OnFadeTick;
     }
 
@@ -71,7 +77,7 @@ internal sealed class MinimapOverlay : Form
         Update();
 
         _fadeTicksRemaining = FadeDelayMs / 100;
-        Opacity = 0.75;
+        Opacity = MinimapOpacity;
         _fadeTimer.Start();
     }
 
@@ -85,7 +91,7 @@ internal sealed class MinimapOverlay : Form
 
         // Reset fade timer
         _fadeTicksRemaining = FadeDelayMs / 100;
-        Opacity = 0.75;
+        Opacity = MinimapOpacity;
         _fadeTimer.Start();
     }
 
@@ -96,8 +102,8 @@ internal sealed class MinimapOverlay : Form
         if (_fadeTicksRemaining <= 0)
         {
             // Fade out over ~500ms (5 ticks)
-            Opacity -= 0.15;
-            if (Opacity <= 0.05)
+            Opacity -= FadeOpacityStep;
+            if (Opacity <= FadeOpacityThreshold)
             {
                 _fadeTimer.Stop();
                 Hide();
@@ -147,8 +153,8 @@ internal sealed class MinimapOverlay : Form
         if (worldW < 1 || worldH < 1) return;
 
         // Compute scale to fit into minimap area
-        double scaleX = (MapWidth - 2.0) / worldW;
-        double scaleY = (MapHeight - 2.0) / worldH;
+        double scaleX = (MapWidth - MinimapBorderPx) / worldW;
+        double scaleY = (MapHeight - MinimapBorderPx) / worldH;
         double scale = Math.Min(scaleX, scaleY);
 
         // Center in minimap
@@ -161,15 +167,16 @@ internal sealed class MinimapOverlay : Form
         using var windowBrush = new SolidBrush(Color.FromArgb(100, 80, 160, 255));
         using var windowPen = new Pen(Color.FromArgb(180, 100, 180, 255), 1f);
 
-        foreach (var (_, world) in _canvas.Windows)
+        foreach (var (hWnd, world) in _canvas.Windows)
         {
+            if (_canvas.IsCollapsed(hWnd)) continue;
             float rx = (float)(offsetX + (world.X - minX) * scale);
             float ry = (float)(offsetY + (world.Y - minY) * scale);
             float rw = (float)(world.W * scale);
             float rh = (float)(world.H * scale);
 
-            if (rw < 2) rw = 2;
-            if (rh < 2) rh = 2;
+            if (rw < MinRectSizePx) rw = MinRectSizePx;
+            if (rh < MinRectSizePx) rh = MinRectSizePx;
 
             g.FillRectangle(windowBrush, rx, ry, rw, rh);
             g.DrawRectangle(windowPen, rx, ry, rw, rh);

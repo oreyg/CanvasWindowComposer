@@ -8,7 +8,8 @@ namespace CanvasDesktop;
 /// </summary>
 internal sealed class WinEventRouter : IDisposable
 {
-    public event Action<IntPtr>? WindowLost;       // minimize or destroy
+    public event Action<IntPtr>? WindowMinimized;   // minimize start
+    public event Action<IntPtr>? WindowDestroyed;  // object destroy
     public event Action<IntPtr>? WindowRestored;   // minimize end
     public event Action<IntPtr>? WindowFocused;    // foreground
     public event Action<IntPtr>? WindowMoved;      // location change (top-level only)
@@ -60,8 +61,11 @@ internal sealed class WinEventRouter : IDisposable
         switch (eventType)
         {
             case NativeMethods.EVENT_SYSTEM_MINIMIZESTART:
+                WindowMinimized?.Invoke(hwnd);
+                break;
+
             case NativeMethods.EVENT_OBJECT_DESTROY:
-                WindowLost?.Invoke(hwnd);
+                WindowDestroyed?.Invoke(hwnd);
                 break;
 
             case NativeMethods.EVENT_SYSTEM_SWITCHSTART:

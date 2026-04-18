@@ -35,6 +35,26 @@ internal sealed class SearchOverlay : Form
     private const string HintText = "Search windows...";
     private const double OpacityIdle = 0.6;
     private const double OpacityActive = 0.92;
+    private const int MaxVisibleResults = 5;
+    private const float StandardDpi = 96f;
+
+    // Base dimensions (scaled by DPI at construction)
+    private const int FormWidthBase = 400;
+    private const int FormBaseHeightBase = 42;
+    private const int PaddingBase = 8;
+    private const int ItemHeightBase = 28;
+    private const int CornerRadiusBase = 12;
+    private const int SearchBoxMarginX = 12;
+    private const int SearchBoxMarginY = 10;
+    private const int SearchBoxHeight = 26;
+    private const int HintLabelMarginX = 14;
+    private const int HintLabelMarginY = 13;
+    private const float SearchBoxFontSize = 12f;
+    private const float HintFontSize = 11f;
+    private const float ResultFontSize = 10f;
+    private const int ResultsListTopOffset = 2;
+    private const int ResultTextPaddingX = 6;
+    private const int ResultTextPaddingY = 4;
 
     // DPI-scaled dimensions
     private readonly int _formWidth;
@@ -55,15 +75,15 @@ internal sealed class SearchOverlay : Form
         // Compute DPI scale factor
         float dpiScale;
         using (var g = Graphics.FromHwnd(IntPtr.Zero))
-            dpiScale = g.DpiX / 96f;
+            dpiScale = g.DpiX / StandardDpi;
 
         int S(int px) => (int)(px * dpiScale);
 
-        _formWidth = S(400);
-        _formBaseHeight = S(42);
-        _padding = S(8);
-        _itemHeight = S(28);
-        _cornerRadius = S(12);
+        _formWidth = S(FormWidthBase);
+        _formBaseHeight = S(FormBaseHeightBase);
+        _padding = S(PaddingBase);
+        _itemHeight = S(ItemHeightBase);
+        _cornerRadius = S(CornerRadiusBase);
 
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
@@ -76,9 +96,9 @@ internal sealed class SearchOverlay : Form
 
         _searchBox = new TextBox
         {
-            Location = new Point(S(12), S(10)),
-            Size = new Size(_formWidth - S(24), S(26)),
-            Font = new Font("Segoe UI", 12 * dpiScale),
+            Location = new Point(S(SearchBoxMarginX), S(SearchBoxMarginY)),
+            Size = new Size(_formWidth - S(SearchBoxMarginX * 2), S(SearchBoxHeight)),
+            Font = new Font("Segoe UI", SearchBoxFontSize * dpiScale),
             BackColor = Color.FromArgb(45, 45, 45),
             ForeColor = Color.White,
             BorderStyle = BorderStyle.None
@@ -89,9 +109,9 @@ internal sealed class SearchOverlay : Form
         _hintLabel = new Label
         {
             Text = HintText,
-            Location = new Point(S(14), S(13)),
+            Location = new Point(S(HintLabelMarginX), S(HintLabelMarginY)),
             AutoSize = true,
-            Font = new Font("Segoe UI", 11 * dpiScale),
+            Font = new Font("Segoe UI", HintFontSize * dpiScale),
             ForeColor = Color.FromArgb(120, 120, 120),
             BackColor = Color.FromArgb(45, 45, 45),
             Cursor = Cursors.IBeam
@@ -102,9 +122,9 @@ internal sealed class SearchOverlay : Form
 
         _resultsList = new ListBox
         {
-            Location = new Point(_padding, _formBaseHeight - S(2)),
+            Location = new Point(_padding, _formBaseHeight - S(ResultsListTopOffset)),
             Size = new Size(_formWidth - _padding * 2, 0),
-            Font = new Font("Segoe UI", 10 * dpiScale),
+            Font = new Font("Segoe UI", ResultFontSize * dpiScale),
             BackColor = Color.FromArgb(40, 40, 40),
             ForeColor = Color.White,
             BorderStyle = BorderStyle.None,
@@ -158,8 +178,8 @@ internal sealed class SearchOverlay : Form
 
             var screen = Screen.PrimaryScreen!.WorkingArea;
             Location = new Point(
-                screen.X + (screen.Width - Width) / 2,
-                screen.Y + (screen.Height - Height) / 3
+                screen.X + (screen.Width - Width)   / 2, // center horizontally
+                screen.Y + (screen.Height - Height) / 3  // upper third, Spotlight-style
             );
 
             PopulateResults(_searchService.GetRecentWindows());
@@ -200,7 +220,7 @@ internal sealed class SearchOverlay : Form
             _resultsList.Items.Add(r.Display);
         }
 
-        int listHeight = Math.Min(_results.Count, 5) * _itemHeight;
+        int listHeight = Math.Min(_results.Count, MaxVisibleResults) * _itemHeight;
         _resultsList.Size = new Size(_resultsList.Width, listHeight);
         Size = new Size(_formWidth, _formBaseHeight + listHeight + _padding / 2);
 
@@ -286,6 +306,6 @@ internal sealed class SearchOverlay : Form
         string text = _resultsList.Items[e.Index]?.ToString() ?? "";
         using var textBrush = new SolidBrush(Color.White);
         e.Graphics.DrawString(text, e.Font!, textBrush,
-            e.Bounds.X + 6, e.Bounds.Y + 4);
+            e.Bounds.X + ResultTextPaddingX, e.Bounds.Y + ResultTextPaddingY);
     }
 }

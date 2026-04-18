@@ -462,4 +462,105 @@ public class CanvasTests
         Assert.Equal(1920.0, w);
         Assert.Equal(1080.0, h);
     }
+
+    // ==================== COLLAPSED ====================
+
+    [Fact]
+    public void CollapseWindow_MarksAsCollapsed()
+    {
+        var canvas = new Canvas();
+        canvas.SetWindow((IntPtr)1, 100, 200, 800, 600);
+        canvas.CollapseWindow((IntPtr)1);
+        Assert.True(canvas.IsCollapsed((IntPtr)1));
+    }
+
+    [Fact]
+    public void ExpandWindow_ClearsCollapsed()
+    {
+        var canvas = new Canvas();
+        canvas.SetWindow((IntPtr)1, 100, 200, 800, 600);
+        canvas.CollapseWindow((IntPtr)1);
+        canvas.ExpandWindow((IntPtr)1);
+        Assert.False(canvas.IsCollapsed((IntPtr)1));
+    }
+
+    [Fact]
+    public void RemoveWindow_ClearsCollapsed()
+    {
+        var canvas = new Canvas();
+        canvas.SetWindow((IntPtr)1, 100, 200, 800, 600);
+        canvas.CollapseWindow((IntPtr)1);
+        canvas.RemoveWindow((IntPtr)1);
+        Assert.False(canvas.IsCollapsed((IntPtr)1));
+    }
+
+    [Fact]
+    public void ClearWindows_ClearsCollapsed()
+    {
+        var canvas = new Canvas();
+        canvas.SetWindow((IntPtr)1, 100, 200, 800, 600);
+        canvas.CollapseWindow((IntPtr)1);
+        canvas.ClearWindows();
+        Assert.False(canvas.IsCollapsed((IntPtr)1));
+    }
+
+    [Fact]
+    public void GetWorldExtents_ExcludesCollapsedWindows()
+    {
+        var canvas = new Canvas();
+        canvas.SetWindow((IntPtr)1, 0, 0, 100, 100);
+        canvas.SetWindow((IntPtr)2, 5000, 5000, 200, 200);
+        canvas.CollapseWindow((IntPtr)2);
+
+        var ext = canvas.GetWorldExtents();
+        Assert.NotNull(ext);
+        var (_, _, maxX, maxY) = ext.Value;
+        Assert.Equal(100, maxX);
+        Assert.Equal(100, maxY);
+    }
+
+    [Fact]
+    public void GetWorldExtents_AllCollapsed_ReturnsNull()
+    {
+        var canvas = new Canvas();
+        canvas.SetWindow((IntPtr)1, 0, 0, 100, 100);
+        canvas.CollapseWindow((IntPtr)1);
+
+        Assert.Null(canvas.GetWorldExtents());
+    }
+
+    [Fact]
+    public void SaveState_PersistsCollapsed()
+    {
+        var canvas = new Canvas();
+        canvas.SetWindow((IntPtr)1, 100, 200, 800, 600);
+        canvas.SetWindow((IntPtr)2, 500, 100, 400, 300);
+        canvas.CollapseWindow((IntPtr)1);
+
+        var state = canvas.SaveState();
+
+        canvas.ExpandWindow((IntPtr)1);
+        canvas.LoadState(state);
+
+        Assert.True(canvas.IsCollapsed((IntPtr)1));
+        Assert.False(canvas.IsCollapsed((IntPtr)2));
+    }
+
+    [Fact]
+    public void LoadState_ClearsOldCollapsed()
+    {
+        var canvas = new Canvas();
+        canvas.SetWindow((IntPtr)1, 100, 200, 800, 600);
+        canvas.CollapseWindow((IntPtr)1);
+
+        // Load state that has no collapsed windows
+        var state = new CanvasState
+        {
+            CamX = 0, CamY = 0, Zoom = 1.0,
+            Windows = new() { [(IntPtr)1] = new WorldRect { X = 100, Y = 200, W = 800, H = 600 } }
+        };
+        canvas.LoadState(state);
+
+        Assert.False(canvas.IsCollapsed((IntPtr)1));
+    }
 }

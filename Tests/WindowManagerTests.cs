@@ -338,6 +338,26 @@ public class WindowManagerTests
         Assert.Single(api.ClippedWindows);
     }
 
+    // ==================== COLLAPSED ====================
+
+    [Fact]
+    public void Reproject_SkipsCollapsedWindows()
+    {
+        var (canvas, api, wm) = Create();
+
+        canvas.SetWindow((IntPtr)1, 100, 100, 400, 300);
+        canvas.SetWindow((IntPtr)2, 600, 200, 400, 300);
+        api.AddWindow((IntPtr)1, 0, 0, 400, 300);
+        api.AddWindow((IntPtr)2, 0, 0, 400, 300);
+
+        canvas.CollapseWindow((IntPtr)1);
+
+        wm.Reproject();
+
+        Assert.Single(api.LastBatch);
+        Assert.Equal((IntPtr)2, api.LastBatch[0].hWnd);
+    }
+
     // ==================== REPROJECT WINDOW ====================
 
     [Fact]

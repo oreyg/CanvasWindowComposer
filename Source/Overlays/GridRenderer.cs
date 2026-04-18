@@ -13,6 +13,11 @@ namespace CanvasDesktop;
 /// </summary>
 internal sealed class GridRenderer : IDisposable
 {
+    private const int FullscreenTriangleVertexCount = 3;
+    private const int VsyncInterval = 1;
+    private const int RenderThreadJoinTimeoutMs = 1000;
+    private const int CbAlignmentMask = 15; // 16-byte alignment
+
     private ID3D11Device? _device;
     private ID3D11DeviceContext? _context;
     private IDXGISwapChain? _swapChain;
@@ -362,7 +367,7 @@ float4 PSMain(VSOut input) : SV_Target
 
     private void CreateConstantBuffer()
     {
-        int cbSize = (Marshal.SizeOf<GridConstants>() + 15) & ~15; // align to 16
+        int cbSize = (Marshal.SizeOf<GridConstants>() + CbAlignmentMask) & ~CbAlignmentMask;
         _constantBuffer = _device!.CreateBuffer(new BufferDescription(
             (uint)cbSize,
             BindFlags.ConstantBuffer,
@@ -474,9 +479,9 @@ float4 PSMain(VSOut input) : SV_Target
         _context.PSSetShader(_pixelShader);
         _context.PSSetConstantBuffer(0, _constantBuffer);
         _context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
-        _context.Draw(3, 0);
+        _context.Draw(FullscreenTriangleVertexCount, 0);
 
-        _swapChain.Present(1, PresentFlags.None);
+        _swapChain.Present(VsyncInterval, PresentFlags.None);
     }
 
     public void Dispose()
@@ -484,7 +489,7 @@ float4 PSMain(VSOut input) : SV_Target
         _alive = false;
         _running = false;
         _wakeEvent.Set(); // wake to exit
-        _renderThread?.Join(1000);
+        _renderThread?.Join(RenderThreadJoinTimeoutMs);
         _wakeEvent.Dispose();
 
         _rtv?.Dispose();

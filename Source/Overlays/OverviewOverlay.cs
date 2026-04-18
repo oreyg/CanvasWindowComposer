@@ -24,6 +24,10 @@ internal sealed class OverviewOverlay : Form
     private const double ZoomMin = 0.05;
     private const double ZoomMax = 1.0;
     private const double ZoomStep = 0.1;
+    private const double ExtentsPaddingRatio = 0.1;
+    private const double MouseWheelDeltaPerNotch = 120.0;
+    private const double ZoomEpsilon = 0.0001;
+    private const float StandardDpi = 96f;
 
     // DWM thumbnail handles
     private readonly List<(IntPtr hWnd, IntPtr thumb, WorldRect world)> _thumbnails = new();
@@ -59,7 +63,7 @@ internal sealed class OverviewOverlay : Form
         get
         {
             var cp = base.CreateParams;
-            cp.ExStyle |= 0x80; // WS_EX_TOOLWINDOW — no taskbar entry
+            cp.ExStyle |= 0x80; // WS_EX_TOOLWINDOW
             return cp;
         }
     }
@@ -101,7 +105,7 @@ internal sealed class OverviewOverlay : Form
         _grid = new GridRenderer();
         _grid.Initialize(Handle, screen.Width, screen.Height);
         using (var g = CreateGraphics())
-            _grid.SetDpiScale(g.DpiX / 96f);
+            _grid.SetDpiScale(g.DpiX / StandardDpi);
         _grid.StartThread();
     }
 
@@ -126,7 +130,7 @@ internal sealed class OverviewOverlay : Form
             _grid = new GridRenderer();
             _grid.Initialize(Handle, screen.Width, screen.Height);
             using (var g = CreateGraphics())
-                _grid.SetDpiScale(g.DpiX / 96f);
+                _grid.SetDpiScale(g.DpiX / StandardDpi);
             _grid.StartThread();
         }
 
@@ -196,8 +200,8 @@ internal sealed class OverviewOverlay : Form
         double worldH = maxY - minY;
 
         // Add 10% padding
-        double padX = worldW * 0.1;
-        double padY = worldH * 0.1;
+        double padX = worldW * ExtentsPaddingRatio;
+        double padY = worldH * ExtentsPaddingRatio;
         minX -= padX; minY -= padY;
         worldW += padX * 2; worldH += padY * 2;
 
@@ -221,7 +225,7 @@ internal sealed class OverviewOverlay : Form
         var zOrder = new List<IntPtr>();
         _pos.EnumWindows(hWnd =>
         {
-            if (_mainCanvas.HasWindow(hWnd))
+            if (_mainCanvas.HasWindow(hWnd) && !_mainCanvas.IsCollapsed(hWnd))
                 zOrder.Add(hWnd);
             return true;
         });
@@ -395,10 +399,10 @@ internal sealed class OverviewOverlay : Form
 
     private void OnMouseWheel(object? sender, MouseEventArgs e)
     {
-        double notches = e.Delta / 120.0;
+        double notches = e.Delta / MouseWheelDeltaPerNotch;
         double newZoom = Math.Clamp(_zoom + notches * ZoomStep * _zoom, ZoomMin, ZoomMax);
 
-        if (Math.Abs(newZoom - _zoom) < 0.0001) return;
+        if (Math.Abs(newZoom - _zoom) < ZoomEpsilon) return;
 
         // Zoom to cursor
         double worldX = e.X / _zoom + _camX;

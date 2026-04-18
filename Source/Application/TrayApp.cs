@@ -24,7 +24,12 @@ internal sealed class TrayApp : ApplicationContext
     private readonly OverviewOverlay _overview;
     private readonly WinEventRouter _winEvents;
     private bool _enabled = true;
-    private const long ForegroundSuppressionMs = 500; // ignore focus events shortly after minimize/close/overlay
+    private const int ReconcileTimerIntervalMs = 500;
+    private const long ForegroundSuppressionMs = 500;
+    private const int TrayIconSizePx = 32;
+    private const float IconLineWidth = 2f;
+    private const int IconArrowLength = 10;
+    private const int IconArrowHead = 3; // ignore focus events shortly after minimize/close/overlay
     private long _lastWindowLostTick;
     private long _lastOverlayClosedTick;
 
@@ -42,28 +47,26 @@ internal sealed class TrayApp : ApplicationContext
         _minimap = new MinimapOverlay(_canvas);
         _search = new SearchOverlay(_canvas, _wm, winApi);
         _overview = new OverviewOverlay(_canvas, _wm, winApi);
-        _overview.OverviewClosed += () => _lastOverlayClosedTick = Environment.TickCount64;
+        _overview.OverviewClosed += OnOverlayClosed;
         _overview.Warmup();
         _inertia = new InertiaEngine(_canvas);
         _inertia.SetUiControl(_minimap);
-        _canvas.CameraChanged += () => { _wm.Reproject(); _minimap.NotifyCanvasChanged(); };
+        _canvas.CameraChanged += OnCameraChanged;
+        _canvas.CollapseChanged += OnCollapseChanged;
         _mouseHook = new MouseHook();
 
-        _mouseHook.DragStarted += () => _inertia.Cancel();
+        _mouseHook.DragStarted += OnDragStarted;
 
         // Hidden message window for hotkeys and input
         _msgWindow = new MessageWindow();
         _msgWindow.RegisterHandlers(
-            onSearchHotkey: () => {
-                if (!AppConfig.DisableSearch)
-                    _search.Toggle();
-            },
-            onOverviewHotkey: () => { _inertia.Cancel(); _overview.Toggle(); },
+            onSearchHotkey: OnSearchHotkey,
+            onOverviewHotkey: OnOverviewHotkey,
             onCanvasInput: OnCanvasInput);
         _mouseHook.SetNotifyTarget(_msgWindow.Handle);
 
         // Background timer for reconcile and VD polling only
-        _bgTimer = new System.Windows.Forms.Timer { Interval = 500 };
+        _bgTimer = new System.Windows.Forms.Timer { Interval = ReconcileTimerIntervalMs };
         _bgTimer.Tick += OnBgTick;
         _bgTimer.Start();
 
@@ -94,12 +97,84 @@ internal sealed class TrayApp : ApplicationContext
         _mouseHook.Install();
 
         _winEvents = new WinEventRouter();
-        _winEvents.WindowLost += _ => _lastWindowLostTick = Environment.TickCount64;
-        _winEvents.AltTabStarted += () => { _wm.SuspendGreedyDraw = true; _wm.UnclipAll(); };
-        _winEvents.AltTabEnded += () => { _wm.SuspendGreedyDraw = false; _wm.ReclipAll(); };
-        _winEvents.WindowRestored += hWnd => _wm.ReprojectWindow(hWnd);
+        _winEvents.WindowMinimized += OnWindowMinimized;
+        _winEvents.WindowDestroyed += OnWindowDestroyed;
+        _winEvents.AltTabStarted += OnAltTabStarted;
+        _winEvents.AltTabEnded += OnAltTabEnded;
+        _winEvents.WindowRestored += OnWindowRestored;
         _winEvents.WindowFocused += OnWindowFocused;
-        _winEvents.WindowMoved += hWnd => { if (_canvas.HasWindow(hWnd)) _wm.ReconcileWindow(hWnd); };
+        _winEvents.WindowMoved += OnWindowMoved;
+    }
+
+    private void OnOverlayClosed()
+    {
+        _lastOverlayClosedTick = Environment.TickCount64;
+    }
+
+    private void OnCameraChanged()
+    {
+        _wm.Reproject();
+        _minimap.NotifyCanvasChanged();
+    }
+
+    private void OnCollapseChanged(IntPtr hWnd)
+    {
+        _wm.ReprojectWindow(hWnd);
+        _minimap.NotifyCanvasChanged();
+    }
+
+    private void OnDragStarted()
+    {
+        _inertia.Cancel();
+    }
+
+    private void OnSearchHotkey()
+    {
+        if (!AppConfig.DisableSearch)
+            _search.Toggle();
+    }
+
+    private void OnOverviewHotkey()
+    {
+        _inertia.Cancel();
+        _overview.Toggle();
+    }
+
+    private void OnWindowMinimized(IntPtr hWnd)
+    {
+        _lastWindowLostTick = Environment.TickCount64;
+        if (_canvas.HasWindow(hWnd))
+            _canvas.CollapseWindow(hWnd);
+    }
+
+    private void OnWindowRestored(IntPtr hWnd)
+    {
+        if (_canvas.HasWindow(hWnd))
+            _canvas.ExpandWindow(hWnd);
+        _wm.ReprojectWindow(hWnd);
+    }
+
+    private void OnWindowDestroyed(IntPtr _)
+    {
+        _lastWindowLostTick = Environment.TickCount64;
+    }
+
+    private void OnAltTabStarted()
+    {
+        _wm.SuspendGreedyDraw = true;
+        _wm.UnclipAll();
+    }
+
+    private void OnAltTabEnded()
+    {
+        _wm.SuspendGreedyDraw = false;
+        _wm.ReclipAll();
+    }
+
+    private void OnWindowMoved(IntPtr hWnd)
+    {
+        if (_canvas.HasWindow(hWnd))
+            _wm.ReconcileWindow(hWnd);
     }
 
     private void OnWindowFocused(IntPtr hwnd)
@@ -206,13 +281,16 @@ internal sealed class TrayApp : ApplicationContext
 
     private static Icon CreateIcon()
     {
-        using var bmp = new Bitmap(32, 32);
+        using var bmp = new Bitmap(TrayIconSizePx, TrayIconSizePx);
         using var g = Graphics.FromImage(bmp);
         g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
         g.Clear(Color.Transparent);
 
-        using var pen = new Pen(Color.White, 2f);
-        int cx = 16, cy = 16, len = 10, arrow = 3;
+        using var pen = new Pen(Color.White, IconLineWidth);
+        int cx = TrayIconSizePx / 2;
+        int cy = TrayIconSizePx / 2;
+        int len = IconArrowLength;
+        int arrow = IconArrowHead;
 
         g.DrawLine(pen, cx - len, cy, cx + len, cy);
         g.DrawLine(pen, cx - len, cy, cx - len + arrow, cy - arrow);

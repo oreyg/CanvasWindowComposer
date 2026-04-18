@@ -9,6 +9,11 @@ namespace CanvasDesktop;
 /// </summary>
 internal sealed class WindowManager
 {
+    private const int ReconcileTolerancePx = 2;
+    private const int ClipEdgeOffsetPx = 1;
+    private const int FallbackScreenWidth = 1920;
+    private const int FallbackScreenHeight = 1080;
+
     private readonly Canvas _canvas;
     private readonly IWindowApi _pos;
     private readonly DllInjector _injector;
@@ -40,6 +45,9 @@ internal sealed class WindowManager
 
         foreach (var (hWnd, world) in _canvas.Windows)
         {
+            if (_canvas.IsCollapsed(hWnd))
+                continue;
+
             if (!IsWindowActive(hWnd))
                 continue;
 
@@ -118,8 +126,8 @@ internal sealed class WindowManager
 
         var (ax, ay, aw, ah) = _pos.GetWindowRect(hWnd);
 
-        if (Math.Abs(ax - last.x) <= 2 && Math.Abs(ay - last.y) <= 2 &&
-            Math.Abs(aw - last.w) <= 2 && Math.Abs(ah - last.h) <= 2)
+        if (Math.Abs(ax - last.x) <= ReconcileTolerancePx && Math.Abs(ay - last.y) <= ReconcileTolerancePx &&
+            Math.Abs(aw - last.w) <= ReconcileTolerancePx && Math.Abs(ah - last.h) <= ReconcileTolerancePx)
             return;
 
         // Don't reconcile clipped windows — they're hidden and we don't
@@ -247,7 +255,7 @@ internal sealed class WindowManager
 
         // Find the nearest screen
         int bestDist = int.MaxValue;
-        var nearest = screens.Count > 0 ? screens[0] : (0, 0, 1920, 1080);
+        var nearest = screens.Count > 0 ? screens[0] : (0, 0, FallbackScreenWidth, FallbackScreenHeight);
 
         foreach (var (left, top, width, height) in screens)
         {
@@ -271,11 +279,23 @@ internal sealed class WindowManager
         // Park 1px inside the nearest edge so the OS considers it "on-screen"
         int px = sx, py = sy;
 
-        if (sx + sw <= nLeft)   px = nLeft - sw + 1;
-        else if (sx >= nRight)  px = nRight - 1;
+        if (sx + sw <= nLeft)
+        {
+            px = nLeft - sw + ClipEdgeOffsetPx;
+        }
+        else if (sx >= nRight)
+        {
+            px = nRight - ClipEdgeOffsetPx;
+        }
 
-        if (sy + sh <= nTop)    py = nTop - sh + 1;
-        else if (sy >= nBottom) py = nBottom - 1;
+        if (sy + sh <= nTop)
+        {
+            py = nTop - sh + ClipEdgeOffsetPx;
+        }
+        else if (sy >= nBottom)
+        {
+            py = nBottom - ClipEdgeOffsetPx;
+        }
 
         return (px, py);
     }

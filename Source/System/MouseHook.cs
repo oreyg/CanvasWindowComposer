@@ -13,6 +13,8 @@ namespace CanvasDesktop;
 /// </summary>
 internal sealed class MouseHook : IDisposable
 {
+    private const int KeyStateDownBit = 0x8000;
+
     private IntPtr _hookId = IntPtr.Zero;
     private readonly NativeMethods.LowLevelMouseProc _proc;
     private bool _dragging;
@@ -183,13 +185,13 @@ internal sealed class MouseHook : IDisposable
     }
 
     private static bool IsAltDown() =>
-        (NativeMethods.GetKeyState(NativeMethods.VK_MENU) & 0x8000) != 0;
+        (NativeMethods.GetKeyState(NativeMethods.VK_MENU) & KeyStateDownBit) != 0;
 
     private static bool IsCtrlDown() =>
-        (NativeMethods.GetKeyState(NativeMethods.VK_CONTROL) & 0x8000) != 0;
+        (NativeMethods.GetKeyState(NativeMethods.VK_CONTROL) & KeyStateDownBit) != 0;
 
     private static bool IsShiftDown() =>
-        (NativeMethods.GetKeyState(NativeMethods.VK_SHIFT) & 0x8000) != 0;
+        (NativeMethods.GetKeyState(NativeMethods.VK_SHIFT) & KeyStateDownBit) != 0;
 
     private static bool IsDesktopOrTaskbarAt(NativeMethods.POINT pt)
     {
