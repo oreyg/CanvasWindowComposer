@@ -7,7 +7,7 @@ namespace CanvasDesktop;
 /// Consumes Canvas state and applies it to real windows.
 /// Handles enumeration, positioning, DPI injection, reconciliation.
 /// </summary>
-internal sealed class WindowManager
+internal sealed class WindowManager : IDisposable
 {
     private const int ReconcileTolerancePx = 2;
     private const int ClipEdgeOffsetPx = 1;
@@ -16,7 +16,7 @@ internal sealed class WindowManager
     private const int ReprojectThrottleMs = 200;
 
     private readonly Canvas _canvas;
-    private readonly IWindowApi _pos;
+    private readonly IWindowApi _win32;
     private readonly DllInjector _injector;
     private readonly IAppConfig _config;
     private readonly IClock _clock;
@@ -36,21 +36,21 @@ internal sealed class WindowManager
 
     public WindowManager(
         Canvas canvas,
-        IWindowApi positioner,
+        IWindowApi win32,
         DllInjector injector,
         IAppConfig config,
         IInputRouter input,
         IClock? clock = null,
         IVirtualDesktops? vds = null,
-        ProjectionWorker? projection = null)
+        bool useAsyncProjection = false)
     {
         _canvas = canvas;
-        _pos = positioner;
+        _win32 = win32;
         _injector = injector;
         _config = config;
         _clock = clock ?? SystemClock.Instance;
         _vds = vds;
-        _projection = projection;
+        _projection = useAsyncProjection ? new ProjectionWorker(win32) : null;
 
         canvas.Committed       += OnCommitted;
         canvas.CameraChanged   += OnCameraChanged;
@@ -71,6 +71,11 @@ internal sealed class WindowManager
     {
         DiscoverNewWindows();
         RemoveStale();
+    }
+
+    public void Dispose()
+    {
+        _projection?.Dispose();
     }
 
     private void OnCommitted()
@@ -159,7 +164,7 @@ internal sealed class WindowManager
             {
                 if (!wasClipped)
                 {
-                    _pos.ClipWindow(hWnd);
+                    _win32.ClipWindow(hWnd);
                     _clippedWindows.Add(hWnd);
                     var (px, py) = ClampToScreenEdge(r.X, r.Y, r.W, r.H);
                     var clipped = new WindowRect(px, py, r.W, r.H);
@@ -171,7 +176,7 @@ internal sealed class WindowManager
 
             if (wasClipped)
             {
-                _pos.UnclipWindow(hWnd);
+                _win32.UnclipWindow(hWnd);
                 _clippedWindows.Remove(hWnd);
             }
 
@@ -182,7 +187,7 @@ internal sealed class WindowManager
         if (_projection != null)
             _projection.Schedule(batch, isAsync: isAsync, isTransient: isTransient);
         else
-            _pos.BatchMove(batch, isAsync: isAsync, isTransient: isTransient);
+            _win32.BatchMove(batch, isAsync: isAsync, isTransient: isTransient);
     }
 
     /// <summary>
@@ -192,7 +197,7 @@ internal sealed class WindowManager
     public bool ReprojectWindow(IntPtr hWnd)
     {
         uint ownPid = (uint)Environment.ProcessId;
-        if (!_pos.IsManageable(hWnd, ownPid))
+        if (!_win32.IsManageable(hWnd, ownPid))
             return false;
 
         if (!_canvas.HasWindow(hWnd))
@@ -203,7 +208,7 @@ internal sealed class WindowManager
 
         var r = _canvas.WorldToScreen(world);
 
-        _pos.SetWindowPosition(hWnd, r.X, r.Y, r.W, r.H,
+        _win32.SetWindowPosition(hWnd, r.X, r.Y, r.W, r.H,
             (uint)(SET_WINDOW_POS_FLAGS.SWP_NOZORDER | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE));
 
         _lastScreen[hWnd] = (r.X, r.Y, r.W, r.H);
@@ -225,7 +230,7 @@ internal sealed class WindowManager
         if (!IsWindowActive(hWnd))
             return;
 
-        int style = _pos.GetWindowStyle(hWnd);
+        int style = _win32.GetWindowStyle(hWnd);
         bool isMaximized = (style & (int)WINDOW_STYLE.WS_MAXIMIZE) != 0;
 
         // Keep canvas's maximize state in sync with Win32
@@ -244,7 +249,7 @@ internal sealed class WindowManager
         if (!_lastScreen.TryGetValue(hWnd, out var last))
             return;
 
-        var (ax, ay, aw, ah) = _pos.GetWindowRect(hWnd);
+        var (ax, ay, aw, ah) = _win32.GetWindowRect(hWnd);
 
         if (Math.Abs(ax - last.x) <= ReconcileTolerancePx && Math.Abs(ay - last.y) <= ReconcileTolerancePx &&
             Math.Abs(aw - last.w) <= ReconcileTolerancePx && Math.Abs(ah - last.h) <= ReconcileTolerancePx)
@@ -265,7 +270,7 @@ internal sealed class WindowManager
         var stale = new List<IntPtr>();
         foreach (var hWnd in _canvas.Windows.Keys)
         {
-            if (!_pos.IsWindowVisible(hWnd))
+            if (!_win32.IsWindowVisible(hWnd))
                 stale.Add(hWnd);
         }
         foreach (var hWnd in stale)
@@ -284,31 +289,31 @@ internal sealed class WindowManager
     public void UnclipAll()
     {
         foreach (var hWnd in _clippedWindows)
-            _pos.UnclipWindow(hWnd);
+            _win32.UnclipWindow(hWnd);
     }
 
     /// <summary>Re-clip windows that should be off-screen.</summary>
     public void ReclipAll()
     {
         foreach (var hWnd in _clippedWindows)
-            _pos.ClipWindow(hWnd);
+            _win32.ClipWindow(hWnd);
     }
 
     /// <summary>Register a new window into the canvas from its screen position.</summary>
     public void RegisterWindow(IntPtr hWnd)
     {
         uint ownPid = (uint)Environment.ProcessId;
-        if (!_pos.IsManageable(hWnd, ownPid))
+        if (!_win32.IsManageable(hWnd, ownPid))
             return;
 
-        var (sx, sy, sw, sh) = _pos.GetWindowRect(hWnd);
+        var (sx, sy, sw, sh) = _win32.GetWindowRect(hWnd);
 
         _canvas.SetWindowFromScreen(hWnd, sx, sy, sw, sh);
         _lastScreen[hWnd] = (sx, sy, sw, sh);
 
         if (!_config.DisableDllInjection)
         {
-            uint pid = _pos.GetWindowProcessId(hWnd);
+            uint pid = _win32.GetWindowProcessId(hWnd);
             if (!_injector.IsInjected(pid))
                 _injector.Inject(pid);
         }
@@ -333,7 +338,7 @@ internal sealed class WindowManager
         _projection?.ClearPending();
 
         foreach (var hWnd in _clippedWindows)
-            _pos.UnclipWindow(hWnd);
+            _win32.UnclipWindow(hWnd);
         _clippedWindows.Clear();
 
         _canvas.ResetCamera();
@@ -349,7 +354,7 @@ internal sealed class WindowManager
             batch.Add(new BatchMoveItem(hWnd, rect, PosOnly: false));
         }
 
-        _pos.BatchMove(batch, isAsync: false, isTransient: false);
+        _win32.BatchMove(batch, isAsync: false, isTransient: false);
         _canvas.ClearWindows();
         _lastScreen.Clear();
     }
@@ -361,10 +366,10 @@ internal sealed class WindowManager
         uint ownPid = (uint)Environment.ProcessId;
         var toAdd = new List<IntPtr>();
 
-        _pos.EnumWindows(hWnd =>
+        _win32.EnumWindows(hWnd =>
         {
             if (_canvas.HasWindow(hWnd)) return true;
-            if (!_pos.IsManageable(hWnd, ownPid)) return true;
+            if (!_win32.IsManageable(hWnd, ownPid)) return true;
             if (_vds != null && !_vds.IsOnCurrentDesktop(hWnd)) return true;
             toAdd.Add(hWnd);
             return true;
@@ -376,9 +381,9 @@ internal sealed class WindowManager
 
     private bool IsWindowActive(IntPtr hWnd)
     {
-        if (!_pos.IsWindowVisible(hWnd))
+        if (!_win32.IsWindowVisible(hWnd))
             return false;
-        int style = _pos.GetWindowStyle(hWnd);
+        int style = _win32.GetWindowStyle(hWnd);
         return (style & (int)WINDOW_STYLE.WS_MINIMIZE) == 0;
     }
 
@@ -388,7 +393,7 @@ internal sealed class WindowManager
     /// </summary>
     private (int x, int y) ClampToScreenEdge(int sx, int sy, int sw, int sh)
     {
-        var screens = _pos.GetScreenWorkingAreas();
+        var screens = _win32.GetScreenWorkingAreas();
 
         // Find the nearest screen
         int bestDist = int.MaxValue;
@@ -440,7 +445,7 @@ internal sealed class WindowManager
     /// <summary>Check if a rect overlaps with any monitor's working area (excludes taskbars).</summary>
     private bool IsOnAnyScreen(int rx, int ry, int rw, int rh)
     {
-        foreach (var (left, top, width, height) in _pos.GetScreenWorkingAreas())
+        foreach (var (left, top, width, height) in _win32.GetScreenWorkingAreas())
         {
             int right = left + width;
             int bottom = top + height;

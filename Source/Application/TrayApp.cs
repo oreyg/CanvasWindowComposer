@@ -21,7 +21,6 @@ internal sealed class TrayApp : ApplicationContext
     private readonly DllInjector _injector;
     private readonly Canvas _canvas;
     private readonly WindowManager _wm;
-    private readonly ProjectionWorker _projection;
     private readonly VirtualDesktopService _vds;
     private readonly MinimapOverlay _minimap;
     private readonly SearchOverlay _search;
@@ -44,9 +43,8 @@ internal sealed class TrayApp : ApplicationContext
         _injector = new DllInjector();
         _vds = new VirtualDesktopService();
         _canvas = new Canvas();
-        _projection = new ProjectionWorker(winApi);
         _input = new Win32InputRouter(_config);
-        _wm = new WindowManager(_canvas, winApi, _injector, _config, _input, _clock, _vds, _projection);
+        _wm = new WindowManager(_canvas, winApi, _injector, _config, _input, _clock, _vds, useAsyncProjection: true);
         _overview = new OverviewManager(_canvas, _wm, winApi, _input, _screens);
         _overview.Warmup();
         _foreground = new ForegroundCoordinator(_canvas, _overview, _input, _clock, _screens);
@@ -112,7 +110,7 @@ internal sealed class TrayApp : ApplicationContext
         _bgTimer.Dispose();
         _input.Dispose();
         _wm.Reset();
-        _projection.Dispose();
+        _wm.Dispose();
         _overview.Dispose();
         _search.Close();
         _minimap.Close();

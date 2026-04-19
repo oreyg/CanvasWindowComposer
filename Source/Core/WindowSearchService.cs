@@ -14,13 +14,13 @@ internal readonly record struct SearchResult(
 internal sealed class WindowSearchService
 {
     private readonly Canvas _canvas;
-    private readonly IWindowApi _pos;
+    private readonly IWindowApi _win32;
     private readonly Dictionary<uint, (string name, string exe)> _processCache = new();
 
-    public WindowSearchService(Canvas canvas, IWindowApi positioner)
+    public WindowSearchService(Canvas canvas, IWindowApi win32)
     {
         _canvas = canvas;
-        _pos = positioner;
+        _win32 = win32;
     }
 
     public void ClearCache() => _processCache.Clear();
@@ -31,9 +31,9 @@ internal sealed class WindowSearchService
         uint ownPid = (uint)Environment.ProcessId;
         string qLower = query.ToLowerInvariant();
 
-        _pos.EnumWindows(hWnd =>
+        _win32.EnumWindows(hWnd =>
         {
-            if (!_pos.IsManageable(hWnd, ownPid, allowMinimized: true))
+            if (!_win32.IsManageable(hWnd, ownPid, allowMinimized: true))
                 return true;
 
             string title = GetWindowTitle(hWnd);
@@ -57,7 +57,7 @@ internal sealed class WindowSearchService
         var results = new List<SearchResult>();
 
         // EnumWindows returns in Z-order (foreground first)
-        _pos.EnumWindows(hWnd =>
+        _win32.EnumWindows(hWnd =>
         {
             if (results.Count >= 5) return false;
             if (!_canvas.HasWindow(hWnd)) return true;
@@ -99,7 +99,7 @@ internal sealed class WindowSearchService
 
     private (string name, string exe) GetProcessInfo(IntPtr hWnd)
     {
-        uint pid = _pos.GetWindowProcessId(hWnd);
+        uint pid = _win32.GetWindowProcessId(hWnd);
 
         if (_processCache.TryGetValue(pid, out var cached))
             return cached;
