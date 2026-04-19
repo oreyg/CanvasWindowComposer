@@ -3,6 +3,10 @@ using System.Collections.Generic;
 
 namespace CanvasDesktop;
 
+/// <summary>One entry of a batched <see cref="IWindowApi.BatchMove"/> call.</summary>
+/// <param name="PosOnly">If true, the call uses SWP_NOSIZE (move only).</param>
+internal readonly record struct BatchMoveItem(IntPtr HWnd, WindowRect Rect, bool PosOnly);
+
 /// <summary>
 /// Abstracts Win32 window operations so WindowManager can be unit-tested.
 /// </summary>
@@ -22,7 +26,7 @@ internal interface IWindowApi
     void SetWindowPosition(IntPtr hWnd, int x, int y, int w, int h, uint flags);
     void ClipWindow(IntPtr hWnd);
     void UnclipWindow(IntPtr hWnd);
-    void BatchMove(List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)> items, bool isAsync, bool isTransient);
+    void BatchMove(List<BatchMoveItem> items, bool isAsync, bool isTransient);
 
     // Enumeration
     void EnumWindows(Func<IntPtr, bool> callback);

@@ -16,7 +16,7 @@ internal sealed class FakeWindowApi : IWindowApi
 
     public readonly Dictionary<IntPtr, WindowInfo> Windows = new();
     public readonly HashSet<IntPtr> ClippedWindows = new();
-    public readonly List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)> LastBatch = new();
+    public readonly List<BatchMoveItem> LastBatch = new();
     public readonly List<(IntPtr hWnd, int x, int y, int w, int h, uint flags)> SetPositionCalls = new();
     public List<(int x, int y, int w, int h)> ScreenAreas = new() { (0, 0, 1920, 1080) };
 
@@ -72,15 +72,16 @@ internal sealed class FakeWindowApi : IWindowApi
 
     public void UnclipWindow(IntPtr hWnd) => ClippedWindows.Remove(hWnd);
 
-    public void BatchMove(List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)> items, bool isAsync, bool isTransient)
+    public void BatchMove(List<BatchMoveItem> items, bool isAsync, bool isTransient)
     {
         LastBatch.Clear();
         LastBatch.AddRange(items);
-        foreach (var (hWnd, x, y, w, h, _) in items)
+        foreach (var item in items)
         {
-            if (Windows.TryGetValue(hWnd, out var win))
+            if (Windows.TryGetValue(item.HWnd, out var win))
             {
-                win.X = x; win.Y = y; win.W = w; win.H = h;
+                var r = item.Rect;
+                win.X = r.X; win.Y = r.Y; win.W = r.W; win.H = r.H;
             }
         }
     }

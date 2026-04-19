@@ -13,12 +13,14 @@ internal sealed class WindowManager
     private const int ClipEdgeOffsetPx = 1;
     private const int FallbackScreenWidth = 1920;
     private const int FallbackScreenHeight = 1080;
+    private const int ReprojectThrottleMs = 200;
 
     private readonly Canvas _canvas;
     private readonly IWindowApi _pos;
     private readonly DllInjector _injector;
     private readonly IAppConfig _config;
-    private readonly VirtualDesktopService? _vds;
+    private readonly IClock _clock;
+    private readonly IVirtualDesktops? _vds;
     private readonly ProjectionWorker? _projection;
 
     // Track last projected screen positions to detect manual moves
@@ -27,17 +29,114 @@ internal sealed class WindowManager
     // Windows with clipped (empty) region to prevent them from fighting off-screen
     private readonly HashSet<IntPtr> _clippedWindows = new();
 
+    private long _lastReprojectTick;
+
     // Temporarily suspends greedy draw (SetWindowRgn clipping)
     public bool SuspendGreedyDraw { get; set; }
 
-    public WindowManager(Canvas canvas, IWindowApi positioner, DllInjector injector, IAppConfig config, VirtualDesktopService? vds = null, ProjectionWorker? projection = null)
+    public WindowManager(
+        Canvas canvas,
+        IWindowApi positioner,
+        DllInjector injector,
+        IAppConfig config,
+        IInputRouter input,
+        IClock? clock = null,
+        IVirtualDesktops? vds = null,
+        ProjectionWorker? projection = null)
     {
         _canvas = canvas;
         _pos = positioner;
         _injector = injector;
         _config = config;
+        _clock = clock ?? SystemClock.Instance;
         _vds = vds;
         _projection = projection;
+
+        canvas.Committed       += OnCommitted;
+        canvas.CameraChanged   += OnCameraChanged;
+        canvas.CollapseChanged += OnReprojectWindowEvent;
+        canvas.MaximizeChanged += OnReprojectWindowEvent;
+
+        input.WindowMinimized += OnWindowMinimizedEvent;
+        input.WindowRestored  += OnWindowRestoredEvent;
+        input.WindowDestroyed += OnWindowDestroyedEvent;
+        input.WindowShown     += OnWindowShownEvent;
+        input.WindowMoved     += OnWindowMovedEvent;
+        input.AltTabStarted   += OnAltTabStarted;
+        input.AltTabEnded     += OnAltTabEnded;
+    }
+
+    /// <summary>Background tick for window discovery + stale removal.</summary>
+    public void Tick()
+    {
+        DiscoverNewWindows();
+        RemoveStale();
+    }
+
+    private void OnCommitted()
+    {
+        Reproject();
+    }
+
+    private void OnCameraChanged()
+    {
+        // Overview renders its own camera + thumbnails, so real windows don't
+        // need to track every frame — but clicks pass through the overlay
+        // (WS_EX_TRANSPARENT) and hit whichever real window is under the
+        // cursor, so we keep HWND positions roughly in sync for WindowFromPoint.
+        // Throttled; final reproject on overview close comes via OnCommitted.
+        long now = _clock.TickCount64;
+        if (now - _lastReprojectTick > ReprojectThrottleMs)
+        {
+            Reproject(isTransient: true);
+            _lastReprojectTick = now;
+        }
+    }
+
+    private void OnReprojectWindowEvent(IntPtr hWnd)
+    {
+        ReprojectWindow(hWnd);
+    }
+
+    private void OnWindowMinimizedEvent(IntPtr hWnd)
+    {
+        if (_canvas.HasWindow(hWnd))
+            _canvas.CollapseWindow(hWnd);
+    }
+
+    private void OnWindowRestoredEvent(IntPtr hWnd)
+    {
+        if (_canvas.HasWindow(hWnd))
+            _canvas.ExpandWindow(hWnd);
+        ReprojectWindow(hWnd);
+    }
+
+    private void OnWindowDestroyedEvent(IntPtr hWnd)
+    {
+        RemoveWindow(hWnd);
+    }
+
+    private void OnWindowShownEvent(IntPtr hWnd)
+    {
+        TryRegisterWindow(hWnd);
+    }
+
+    private void OnWindowMovedEvent(IntPtr hWnd)
+    {
+        if (_canvas.HasWindow(hWnd))
+            ReconcileWindow(hWnd);
+    }
+
+    private void OnAltTabStarted()
+    {
+        SuspendGreedyDraw = true;
+        UnclipAll();
+    }
+
+    private void OnAltTabEnded()
+    {
+        SuspendGreedyDraw = false;
+        ReclipAll();
     }
 
     /// <summary>
@@ -45,16 +144,15 @@ internal sealed class WindowManager
     /// </summary>
     public void Reproject(bool isAsync = false, bool isTransient = false)
     {
-        var batch = new List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)>();
+        var batch = new List<BatchMoveItem>();
 
         foreach (var (hWnd, world) in _canvas.Windows)
         {
             if (world.State != WindowState.Normal)
                 continue;
 
-            var (sx, sy) = _canvas.WorldToScreen(world.X, world.Y);
-            var (sw, sh) = _canvas.WorldToScreenSize(world.W, world.H);
-            bool onScreen = IsOnAnyScreen(sx, sy, sw, sh);
+            var r = _canvas.WorldToScreen(world);
+            bool onScreen = IsOnAnyScreen(r.X, r.Y, r.W, r.H);
 
             bool wasClipped = _clippedWindows.Contains(hWnd);
             if (!_config.DisableGreedyDraw && !SuspendGreedyDraw && !onScreen)
@@ -63,9 +161,10 @@ internal sealed class WindowManager
                 {
                     _pos.ClipWindow(hWnd);
                     _clippedWindows.Add(hWnd);
-                    var (px, py) = ClampToScreenEdge(sx, sy, sw, sh);
-                    batch.Add((hWnd, px, py, sw, sh, false));
-                    _lastScreen[hWnd] = (px, py, sw, sh);
+                    var (px, py) = ClampToScreenEdge(r.X, r.Y, r.W, r.H);
+                    var clipped = new WindowRect(px, py, r.W, r.H);
+                    batch.Add(new BatchMoveItem(hWnd, clipped, PosOnly: false));
+                    _lastScreen[hWnd] = (px, py, r.W, r.H);
                 }
                 continue;
             }
@@ -76,8 +175,8 @@ internal sealed class WindowManager
                 _clippedWindows.Remove(hWnd);
             }
 
-            batch.Add((hWnd, sx, sy, sw, sh, true));
-            _lastScreen[hWnd] = (sx, sy, sw, sh);
+            batch.Add(new BatchMoveItem(hWnd, r, PosOnly: true));
+            _lastScreen[hWnd] = (r.X, r.Y, r.W, r.H);
         }
 
         if (_projection != null)
@@ -102,13 +201,12 @@ internal sealed class WindowManager
         if (!_canvas.Windows.TryGetValue(hWnd, out var world))
             return false;
 
-        var (sx, sy) = _canvas.WorldToScreen(world.X, world.Y);
-        var (sw, sh) = _canvas.WorldToScreenSize(world.W, world.H);
+        var r = _canvas.WorldToScreen(world);
 
-        _pos.SetWindowPosition(hWnd, sx, sy, sw, sh,
+        _pos.SetWindowPosition(hWnd, r.X, r.Y, r.W, r.H,
             (uint)(SET_WINDOW_POS_FLAGS.SWP_NOZORDER | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE));
 
-        _lastScreen[hWnd] = (sx, sy, sw, sh);
+        _lastScreen[hWnd] = (r.X, r.Y, r.W, r.H);
         return true;
     }
 
@@ -240,17 +338,15 @@ internal sealed class WindowManager
 
         _canvas.ResetCamera();
 
-        var batch = new List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)>();
+        var batch = new List<BatchMoveItem>();
 
         foreach (var (hWnd, world) in _canvas.Windows)
         {
             if (!IsWindowActive(hWnd))
                 continue;
 
-            int sx = (int)world.X, sy = (int)world.Y;
-            int sw = (int)world.W, sh = (int)world.H;
-
-            batch.Add((hWnd, sx, sy, sw, sh, false));
+            var rect = new WindowRect((int)world.X, (int)world.Y, (int)world.W, (int)world.H);
+            batch.Add(new BatchMoveItem(hWnd, rect, PosOnly: false));
         }
 
         _pos.BatchMove(batch, isAsync: false, isTransient: false);

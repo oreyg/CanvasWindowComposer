@@ -24,7 +24,7 @@ internal sealed class ProjectionWorker : IDisposable
 
     private sealed class Job
     {
-        public required List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)> Items;
+        public required List<BatchMoveItem> Items;
         public bool IsTransient;
         public bool IsAsync;
     }
@@ -42,7 +42,7 @@ internal sealed class ProjectionWorker : IDisposable
 
     /// <summary>UI thread: hand off the latest batch. Overwrites any earlier pending batch.</summary>
     public void Schedule(
-        List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)> items,
+        List<BatchMoveItem> items,
         bool isAsync,
         bool isTransient)
     {

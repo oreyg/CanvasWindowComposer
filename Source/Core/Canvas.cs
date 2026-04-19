@@ -11,6 +11,9 @@ internal struct WorldRect
     public WindowState State;
 }
 
+/// <summary>Screen-space projection of a <see cref="WorldRect"/>.</summary>
+internal readonly record struct WindowRect(int X, int Y, int W, int H);
+
 internal struct CanvasState
 {
     public double CamX, CamY, Zoom;
@@ -51,6 +54,14 @@ internal sealed class Canvas
             Math.Max(MinWindowWidth, (int)Math.Ceiling(ww * _zoom)),
             Math.Max(MinWindowHeight, (int)Math.Ceiling(wh * _zoom))
         );
+    }
+
+    /// <summary>Project a world rect to its on-screen position + size in one shot.</summary>
+    public WindowRect WorldToScreen(WorldRect world)
+    {
+        var (x, y) = WorldToScreen(world.X, world.Y);
+        var (w, h) = WorldToScreenSize(world.W, world.H);
+        return new WindowRect(x, y, w, h);
     }
 
     public (double x, double y) ScreenToWorld(int sx, int sy)
@@ -141,11 +152,9 @@ internal sealed class Canvas
         if (!_windows.TryGetValue(hWnd, out var world))
             return false;
 
-        var (sx, sy) = WorldToScreen(world.X, world.Y);
-        var (sw, sh) = WorldToScreenSize(world.W, world.H);
-
-        return sx + sw > 0 && sx < screenW &&
-               sy + sh > 0 && sy < screenH;
+        var r = WorldToScreen(world);
+        return r.X + r.W > 0 && r.X < screenW &&
+               r.Y + r.H > 0 && r.Y < screenH;
     }
 
     public void ResetCamera()

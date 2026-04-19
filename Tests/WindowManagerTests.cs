@@ -10,7 +10,7 @@ public class WindowManagerTests
     {
         var canvas = new Canvas();
         var api = new FakeWindowApi();
-        var wm = new WindowManager(canvas, api, new DllInjector(), config ?? new FakeAppConfig());
+        var wm = new WindowManager(canvas, api, new DllInjector(), config ?? new FakeAppConfig(), new FakeInputRouter(), new FakeClock());
         return (canvas, api, wm);
     }
 
@@ -29,9 +29,9 @@ public class WindowManagerTests
 
         Assert.Single(api.LastBatch);
         var item = api.LastBatch[0];
-        Assert.Equal((IntPtr)1, item.hWnd);
-        Assert.Equal(100, item.x);
-        Assert.Equal(200, item.y);
+        Assert.Equal((IntPtr)1, item.HWnd);
+        Assert.Equal(100, item.Rect.X);
+        Assert.Equal(200, item.Rect.Y);
     }
 
     [Fact]
@@ -282,10 +282,10 @@ public class WindowManagerTests
         // Batch should contain world coordinates
         Assert.Single(api.LastBatch);
         var item = api.LastBatch[0];
-        Assert.Equal(300, item.x);
-        Assert.Equal(400, item.y);
-        Assert.Equal(800, item.w);
-        Assert.Equal(600, item.h);
+        Assert.Equal(300, item.Rect.X);
+        Assert.Equal(400, item.Rect.Y);
+        Assert.Equal(800, item.Rect.W);
+        Assert.Equal(600, item.Rect.H);
     }
 
     // ==================== UNCLIP / RECLIP ====================
@@ -342,7 +342,7 @@ public class WindowManagerTests
         wm.Reproject();
 
         Assert.Single(api.LastBatch);
-        Assert.Equal((IntPtr)2, api.LastBatch[0].hWnd);
+        Assert.Equal((IntPtr)2, api.LastBatch[0].HWnd);
     }
 
     // ==================== APP CONFIG FLAGS ====================
@@ -362,7 +362,7 @@ public class WindowManagerTests
         // never clipped.
         Assert.DoesNotContain((IntPtr)1, api.ClippedWindows);
         Assert.Single(api.LastBatch);
-        Assert.Equal(5000, api.LastBatch[0].x);
+        Assert.Equal(5000, api.LastBatch[0].Rect.X);
     }
 
     [Fact]

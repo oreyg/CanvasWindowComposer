@@ -9,7 +9,7 @@ namespace CanvasDesktop;
 /// Coordinator for the overview: owns mode state, camera, inertia, and one
 /// OverviewOverlay per physical monitor (each with its own Form + swap chain).
 /// </summary>
-internal sealed class OverviewManager : IDisposable
+internal sealed class OverviewManager : IDisposable, IOverviewController
 {
     public enum Mode { Hidden, Panning, Zooming }
 
@@ -45,6 +45,7 @@ internal sealed class OverviewManager : IDisposable
     private readonly WindowManager _wm;
     private readonly IWindowApi _pos;
     private readonly IScreens _screens;
+    private readonly IInputRouter _input;
 
     public Mode CurrentMode { get; private set; } = Mode.Hidden;
     private ModeConfig _cfg = HiddenCfg;
@@ -106,14 +107,18 @@ internal sealed class OverviewManager : IDisposable
         }
     }
 
-    public OverviewManager(Canvas mainCanvas, WindowManager wm, IWindowApi positioner, IScreens? screens = null)
+    public OverviewManager(Canvas mainCanvas, WindowManager wm, IWindowApi positioner, IInputRouter input, IScreens? screens = null)
     {
         _mainCanvas = mainCanvas;
         _wm = wm;
         _pos = positioner;
+        _input = input;
         _screens = screens ?? WinFormsScreens.Instance;
 
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+
+        // Reference held only to keep the binding alive for the lifetime of this manager.
+        _ = new OverviewInputs(this, input, mainCanvas);
     }
 
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)

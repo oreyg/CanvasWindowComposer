@@ -6,7 +6,7 @@ namespace CanvasDesktop;
 /// Owns Win32 event hooks and exposes typed events.
 /// Decouples TrayApp from raw WinEvent dispatching.
 /// </summary>
-internal sealed class WinEventRouter : IDisposable
+internal sealed class Win32EventRouter : IDisposable
 {
     public event Action<IntPtr>? WindowMinimized;   // minimize start
     public event Action<IntPtr>? WindowDestroyed;  // object destroy
@@ -24,7 +24,7 @@ internal sealed class WinEventRouter : IDisposable
     private readonly UnhookWinEventSafeHandle _hookLocationChange;
     private readonly WINEVENTPROC _winEventProc;
 
-    public WinEventRouter()
+    public Win32EventRouter()
     {
         _winEventProc = OnWinEvent;
 

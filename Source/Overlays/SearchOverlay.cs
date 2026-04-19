@@ -11,6 +11,7 @@ internal sealed class SearchOverlay : Form
     private readonly Canvas _canvas;
     private readonly WindowManager _wm;
     private readonly IScreens _screens;
+    private readonly IAppConfig _config;
     private readonly WindowSearchService _searchService;
     private readonly TextBox _searchBox;
     private readonly Label _hintLabel;
@@ -63,12 +64,14 @@ internal sealed class SearchOverlay : Form
     private readonly int _itemHeight;
     private readonly int _cornerRadius;
 
-    public SearchOverlay(Canvas canvas, WindowManager wm, IWindowApi positioner, IScreens? screens = null)
+    public SearchOverlay(Canvas canvas, WindowManager wm, IWindowApi positioner, IInputRouter input, IAppConfig config, IScreens? screens = null)
     {
         _canvas = canvas;
         _wm = wm;
         _screens = screens ?? WinFormsScreens.Instance;
+        _config = config;
         _searchService = new WindowSearchService(canvas, positioner);
+        input.SearchHotkey += OnSearchHotkey;
 
         // Compute DPI scale factor
         float dpiScale;
@@ -156,6 +159,12 @@ internal sealed class SearchOverlay : Form
         bool empty = string.IsNullOrEmpty(_searchBox.Text);
         _hintLabel.Visible = empty;
         Opacity = empty ? OpacityIdle : OpacityActive;
+    }
+
+    private void OnSearchHotkey()
+    {
+        if (_config.DisableSearch) return;
+        Toggle();
     }
 
     public void Toggle()

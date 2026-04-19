@@ -24,12 +24,17 @@ internal class CVirtualDesktopManager { }
 /// Wraps the IVirtualDesktopManager COM interface.
 /// Detects virtual desktop switches by polling.
 /// </summary>
-internal sealed class VirtualDesktopService : IDisposable
+internal sealed class VirtualDesktopService : IVirtualDesktops, IDisposable
 {
     private readonly IVirtualDesktopManager? _manager;
     private Guid _currentDesktopId;
 
-    public Guid CurrentDesktopId => _currentDesktopId;
+    public Guid CurrentDesktopId
+    {
+        get { return _currentDesktopId; }
+    }
+
+    public event Action? DesktopChanged;
 
     public VirtualDesktopService()
     {
@@ -45,8 +50,6 @@ internal sealed class VirtualDesktopService : IDisposable
         }
     }
 
-    public bool IsAvailable => _manager != null;
-
     /// <summary>Check if a window is on the current virtual desktop.</summary>
     public bool IsOnCurrentDesktop(IntPtr hWnd)
     {
@@ -59,20 +62,17 @@ internal sealed class VirtualDesktopService : IDisposable
         catch { return true; }
     }
 
-    /// <summary>
-    /// Check if the virtual desktop changed since last call.
-    /// Returns true on switch. Updates CurrentDesktopId.
-    /// </summary>
-    public bool CheckDesktopChanged()
+    /// <summary>Poll for a desktop switch; fires <see cref="DesktopChanged"/> if one occurred.</summary>
+    public void Tick()
     {
-        if (_manager == null) return false;
+        if (_manager == null) return;
 
         Guid newId = DetectCurrentDesktop();
         if (newId == _currentDesktopId || newId == Guid.Empty)
-            return false;
+            return;
 
         _currentDesktopId = newId;
-        return true;
+        DesktopChanged?.Invoke();
     }
 
     private Guid DetectCurrentDesktop()

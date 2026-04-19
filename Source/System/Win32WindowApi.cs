@@ -131,7 +131,7 @@ internal sealed class Win32WindowApi : IWindowApi
         _ = PInvoke.SetWindowRgn((HWND)hWnd, (HRGN)IntPtr.Zero, true);
     }
 
-    public void BatchMove(List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)> items, bool isAsync, bool isTransient)
+    public void BatchMove(List<BatchMoveItem> items, bool isAsync, bool isTransient)
     {
         if (items.Count == 0)
             return;
@@ -139,26 +139,27 @@ internal sealed class Win32WindowApi : IWindowApi
         HDWP hdwp = PInvoke.BeginDeferWindowPos(items.Count);
         bool useBatch = hdwp != default(HDWP);
 
-        foreach (var (hWnd, x, y, w, h, posOnly) in items)
+        foreach (var item in items)
         {
             SET_WINDOW_POS_FLAGS flags = SET_WINDOW_POS_FLAGS.SWP_NOZORDER | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE;
-            if (posOnly)     flags |= SET_WINDOW_POS_FLAGS.SWP_NOSIZE;
-            if (isAsync)     flags |= SET_WINDOW_POS_FLAGS.SWP_ASYNCWINDOWPOS;
-            if (isTransient) flags |= SET_WINDOW_POS_FLAGS.SWP_NOSENDCHANGING;
+            if (item.PosOnly)  flags |= SET_WINDOW_POS_FLAGS.SWP_NOSIZE;
+            if (isAsync)       flags |= SET_WINDOW_POS_FLAGS.SWP_ASYNCWINDOWPOS;
+            if (isTransient)   flags |= SET_WINDOW_POS_FLAGS.SWP_NOSENDCHANGING;
 
-            HWND target = (HWND)hWnd;
+            HWND target = (HWND)item.HWnd;
+            var r = item.Rect;
             if (useBatch)
             {
-                hdwp = PInvoke.DeferWindowPos(hdwp, target, HWND.Null, x, y, w, h, flags);
+                hdwp = PInvoke.DeferWindowPos(hdwp, target, HWND.Null, r.X, r.Y, r.W, r.H, flags);
                 if (hdwp == default(HDWP))
                 {
                     useBatch = false;
-                    PInvoke.SetWindowPos(target, HWND.Null, x, y, w, h, flags);
+                    PInvoke.SetWindowPos(target, HWND.Null, r.X, r.Y, r.W, r.H, flags);
                 }
             }
             else
             {
-                PInvoke.SetWindowPos(target, HWND.Null, x, y, w, h, flags);
+                PInvoke.SetWindowPos(target, HWND.Null, r.X, r.Y, r.W, r.H, flags);
             }
         }
 

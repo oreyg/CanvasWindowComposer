@@ -50,7 +50,7 @@ internal sealed class MinimapOverlay : Form
 
     protected override bool ShowWithoutActivation => true;
 
-    public MinimapOverlay(Canvas canvas, IScreens? screens = null)
+    public MinimapOverlay(Canvas canvas, IInputRouter input, DesktopStateCache desktops, IScreens? screens = null)
     {
         _canvas = canvas;
         _screens = screens ?? WinFormsScreens.Instance;
@@ -68,6 +68,17 @@ internal sealed class MinimapOverlay : Form
 
         _fadeTimer = new Timer { Interval = FadeTickIntervalMs };
         _fadeTimer.Tick += OnFadeTick;
+
+        canvas.CameraChanged    += NotifyCanvasChanged;
+        canvas.CollapseChanged  += OnWindowStateChanged;
+        canvas.MaximizeChanged  += OnWindowStateChanged;
+        input.DragStarted       += BringToFront;
+        desktops.AfterStateLoaded += ShowBriefly;
+    }
+
+    private void OnWindowStateChanged(IntPtr hWnd)
+    {
+        NotifyCanvasChanged();
     }
 
     /// <summary>Force-show the minimap briefly (e.g., on desktop switch).</summary>
