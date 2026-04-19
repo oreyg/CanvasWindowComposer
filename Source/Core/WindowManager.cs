@@ -34,6 +34,33 @@ internal sealed class WindowManager : IDisposable
     // Temporarily suspends greedy draw (SetWindowRgn clipping)
     public bool SuspendGreedyDraw { get; set; }
 
+    private bool _suspendReconcile;
+    private bool _reconcilePending;
+
+    /// <summary>
+    /// While true, <see cref="Reconcile"/> and <see cref="ReconcileWindow"/>
+    /// short-circuit and only flag that a reconcile was requested. Set by the
+    /// overview lifecycle so our own reprojections don't feed back through
+    /// WindowMoved → Reconcile and overwrite canvas world coords with
+    /// rounding-drifted screen coords. When flipped back to false, if any
+    /// reconcile call was suppressed during the on period, a full
+    /// <see cref="Reconcile"/> runs to catch up on any drift.
+    /// </summary>
+    public bool SuspendReconcile
+    {
+        get { return _suspendReconcile; }
+        set
+        {
+            if (_suspendReconcile == value) return;
+            _suspendReconcile = value;
+            if (!value && _reconcilePending)
+            {
+                _reconcilePending = false;
+                Reconcile();
+            }
+        }
+    }
+
     public WindowManager(
         Canvas canvas,
         IWindowApi win32,
@@ -80,7 +107,7 @@ internal sealed class WindowManager : IDisposable
 
     private void OnCommitted()
     {
-        Reproject();
+        ReprojectSync();
     }
 
     private void OnCameraChanged()
@@ -149,6 +176,31 @@ internal sealed class WindowManager : IDisposable
     /// </summary>
     public void Reproject(bool isAsync = false, bool isTransient = false)
     {
+        var batch = BuildReprojectBatch();
+
+        if (_projection != null)
+            _projection.Schedule(batch, isAsync: isAsync, isTransient: isTransient);
+        else
+            _win32.BatchMove(batch, isAsync: isAsync, isTransient: isTransient);
+    }
+
+    /// <summary>
+    /// Like <see cref="Reproject"/>, but bypasses the <see cref="ProjectionWorker"/>
+    /// and applies the batch synchronously on the calling thread. Use this when
+    /// the caller depends on the windows being at their final positions before
+    /// the next visible frame (e.g. just before the overview overlay hides).
+    /// Drops any worker batch that hasn't been applied yet so it can't stomp
+    /// the sync result.
+    /// </summary>
+    public void ReprojectSync(bool isAsync = false, bool isTransient = false)
+    {
+        _projection?.ClearPending();
+        var batch = BuildReprojectBatch();
+        _win32.BatchMove(batch, isAsync: false, isTransient: false);
+    }
+
+    private List<BatchMoveItem> BuildReprojectBatch()
+    {
         var batch = new List<BatchMoveItem>();
 
         foreach (var (hWnd, world) in _canvas.Windows)
@@ -168,7 +220,7 @@ internal sealed class WindowManager : IDisposable
                     _clippedWindows.Add(hWnd);
                     var (px, py) = ClampToScreenEdge(r.X, r.Y, r.W, r.H);
                     var clipped = new WindowRect(px, py, r.W, r.H);
-                    batch.Add(new BatchMoveItem(hWnd, clipped, PosOnly: false));
+                    batch.Add(new BatchMoveItem(hWnd, clipped, PosOnly: true));
                     _lastScreen[hWnd] = (px, py, r.W, r.H);
                 }
                 continue;
@@ -184,10 +236,7 @@ internal sealed class WindowManager : IDisposable
             _lastScreen[hWnd] = (r.X, r.Y, r.W, r.H);
         }
 
-        if (_projection != null)
-            _projection.Schedule(batch, isAsync: isAsync, isTransient: isTransient);
-        else
-            _win32.BatchMove(batch, isAsync: isAsync, isTransient: isTransient);
+        return batch;
     }
 
     /// <summary>
@@ -220,6 +269,11 @@ internal sealed class WindowManager : IDisposable
     /// </summary>
     public void Reconcile()
     {
+        if (_suspendReconcile)
+        {
+            _reconcilePending = true;
+            return;
+        }
         foreach (var (hWnd, _) in _canvas.Windows)
             ReconcileWindow(hWnd);
     }
@@ -227,6 +281,11 @@ internal sealed class WindowManager : IDisposable
     /// <summary>Update a single window's world position from its actual screen position.</summary>
     public void ReconcileWindow(IntPtr hWnd)
     {
+        if (_suspendReconcile)
+        {
+            _reconcilePending = true;
+            return;
+        }
         if (!IsWindowActive(hWnd))
             return;
 

@@ -230,6 +230,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         _camera.SyncFrom(_mainCanvas);
 
         _wm.SuspendGreedyDraw = true;
+        _wm.SuspendReconcile = true;
         _wm.UnclipAll();
 
         _windows.Refresh();
@@ -272,6 +273,8 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
         _wm.SuspendGreedyDraw = false;
         _wm.ReclipAll();
+        _mainCanvas.Commit();
+        _wm.SuspendReconcile = false;
 
         foreach (var p in _passes)
         {

@@ -19,6 +19,11 @@ internal sealed class ProjectionWorker : IDisposable
     private readonly IWindowApi _win32;
     private readonly Thread _thread;
     private readonly ManualResetEventSlim _signal = new(false);
+    // Held while the worker is inside _win32.BatchMove. ClearPending takes
+    // this lock so callers can't race a sync BatchMove against an in-flight
+    // worker batch on the same HWNDs (would scramble WM_WINDOWPOSCHANGING/
+    // CHANGED ordering and leave app client state stale).
+    private readonly object _processLock = new();
     private volatile bool _alive = true;
     private Job? _pending;
 
@@ -50,10 +55,16 @@ internal sealed class ProjectionWorker : IDisposable
         _signal.Set();
     }
 
-    /// <summary>Drop any batch that hasn't been applied yet (used before sync Reset).</summary>
+    /// <summary>
+    /// Drop any batch that hasn't been applied yet AND wait for the worker to
+    /// finish whatever batch it's currently inside. Callers that follow this
+    /// with their own sync BatchMove (e.g. ReprojectSync) need that guarantee
+    /// to avoid concurrent SetWindowPos calls on the same HWNDs.
+    /// </summary>
     public void ClearPending()
     {
         Interlocked.Exchange(ref _pending, null);
+        lock (_processLock) { }
     }
 
     private void Loop()
@@ -66,7 +77,10 @@ internal sealed class ProjectionWorker : IDisposable
 
             Job? job = Interlocked.Exchange(ref _pending, null);
             if (job != null)
-                _win32.BatchMove(job.Items, isAsync: job.IsAsync, isTransient: job.IsTransient);
+            {
+                lock (_processLock)
+                    _win32.BatchMove(job.Items, isAsync: job.IsAsync, isTransient: job.IsTransient);
+            }
         }
     }
 
