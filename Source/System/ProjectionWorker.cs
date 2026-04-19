@@ -63,8 +63,10 @@ internal sealed class ProjectionWorker : IDisposable
     /// </summary>
     public void ClearPending()
     {
-        Interlocked.Exchange(ref _pending, null);
-        lock (_processLock) { }
+        lock (_processLock)
+        {
+            Interlocked.Exchange(ref _pending, null);
+        }
     }
 
     private void Loop()
@@ -75,10 +77,10 @@ internal sealed class ProjectionWorker : IDisposable
             _signal.Reset();
             if (!_alive) break;
 
-            Job? job = Interlocked.Exchange(ref _pending, null);
-            if (job != null)
+            lock (_processLock)
             {
-                lock (_processLock)
+                Job? job = Interlocked.Exchange(ref _pending, null);
+                if (job != null)
                     _win32.BatchMove(job.Items, isAsync: job.IsAsync, isTransient: job.IsTransient);
             }
         }
