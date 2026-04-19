@@ -41,16 +41,13 @@ internal sealed class WindowManager
     /// <summary>
     /// Project all canvas windows to screen. Call after Pan.
     /// </summary>
-    public void Reproject(bool allowAsync = false)
+    public void Reproject(bool isAsync = false, bool isTransient = false)
     {
         var batch = new List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)>();
 
         foreach (var (hWnd, world) in _canvas.Windows)
         {
             if (world.State != WindowState.Normal)
-                continue;
-
-            if (!IsWindowActive(hWnd))
                 continue;
 
             var (sx, sy) = _canvas.WorldToScreen(world.X, world.Y);
@@ -82,9 +79,9 @@ internal sealed class WindowManager
         }
 
         if (_projection != null)
-            _projection.Schedule(batch, allowAsync);
+            _projection.Schedule(batch, isAsync: isAsync, isTransient: isTransient);
         else
-            _pos.BatchMove(batch, allowAsync);
+            _pos.BatchMove(batch, isAsync: isAsync, isTransient: isTransient);
     }
 
     /// <summary>
@@ -172,10 +169,15 @@ internal sealed class WindowManager
                 stale.Add(hWnd);
         }
         foreach (var hWnd in stale)
-        {
-            _canvas.RemoveWindow(hWnd);
-            _lastScreen.Remove(hWnd);
-        }
+            RemoveWindow(hWnd);
+    }
+
+    /// <summary>Drop a single window from canvas and internal tracking.</summary>
+    public void RemoveWindow(IntPtr hWnd)
+    {
+        _canvas.RemoveWindow(hWnd);
+        _lastScreen.Remove(hWnd);
+        _clippedWindows.Remove(hWnd);
     }
 
     /// <summary>Restore regions on all clipped windows (for overview thumbnails).</summary>
@@ -212,6 +214,18 @@ internal sealed class WindowManager
         }
     }
 
+    /// <summary>
+    /// Register a single HWND if it passes the full "new window" filter chain
+    /// (not already tracked, manageable, on current virtual desktop).
+    /// Event-driven counterpart to DiscoverNewWindows.
+    /// </summary>
+    public void TryRegisterWindow(IntPtr hWnd)
+    {
+        if (_canvas.HasWindow(hWnd)) return;
+        if (_vds != null && !_vds.IsOnCurrentDesktop(hWnd)) return;
+        RegisterWindow(hWnd);
+    }
+
     /// <summary>Reset: restore all windows to world positions, clear canvas.</summary>
     public void Reset()
     {
@@ -237,7 +251,7 @@ internal sealed class WindowManager
             batch.Add((hWnd, sx, sy, sw, sh, false));
         }
 
-        _pos.BatchMove(batch, allowAsync: false);
+        _pos.BatchMove(batch, isAsync: false, isTransient: false);
         _canvas.ClearWindows();
         _lastScreen.Clear();
     }

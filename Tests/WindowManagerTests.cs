@@ -81,27 +81,13 @@ public class WindowManagerTests
     }
 
     [Fact]
-    public void Reproject_SkipsInvisibleWindows()
-    {
-        var (canvas, api, wm) = Create();
-
-        canvas.SetWindow((IntPtr)1, 100, 100, 800, 600);
-        api.AddWindow((IntPtr)1, 0, 0, 800, 600);
-        api.Windows[(IntPtr)1].Visible = false;
-
-        wm.Reproject();
-
-        Assert.Empty(api.LastBatch);
-    }
-
-    [Fact]
     public void Reproject_SkipsMinimizedWindows()
     {
         var (canvas, api, wm) = Create();
 
         canvas.SetWindow((IntPtr)1, 100, 100, 800, 600);
-        api.AddWindow((IntPtr)1, 0, 0, 800, 600,
-            style: (int)Windows.Win32.UI.WindowsAndMessaging.WINDOW_STYLE.WS_MINIMIZE);
+        canvas.CollapseWindow((IntPtr)1); // canvas state drives Reproject now
+        api.AddWindow((IntPtr)1, 0, 0, 800, 600);
 
         wm.Reproject();
 

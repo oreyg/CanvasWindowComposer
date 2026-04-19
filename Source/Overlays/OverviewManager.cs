@@ -158,7 +158,7 @@ internal sealed class OverviewManager : IDisposable
             pass.OnMouseMoved = HandleMouseMove;
             pass.OnMouseButtonUp = HandleMouseUp;
             pass.OnWheel = HandleMouseWheel;
-            pass.OnDoubleClick = HandleDoubleClick;
+            pass.OnMouseDoubleClicked = HandleDoubleClick;
             _passes.Add(pass);
         }
     }

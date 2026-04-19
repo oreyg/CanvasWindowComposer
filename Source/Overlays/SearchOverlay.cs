@@ -236,13 +236,19 @@ internal sealed class SearchOverlay : Form
 
             case Keys.Down:
                 if (_resultsList.Items.Count > 0)
+                {
                     _resultsList.SelectedIndex = Math.Min(_resultsList.SelectedIndex + 1, _resultsList.Items.Count - 1);
+                    Opacity = OpacityActive;
+                }
                 e.SuppressKeyPress = true;
                 break;
 
             case Keys.Up:
                 if (_resultsList.Items.Count > 0)
+                {
                     _resultsList.SelectedIndex = Math.Max(_resultsList.SelectedIndex - 1, 0);
+                    Opacity = OpacityActive;
+                }
                 e.SuppressKeyPress = true;
                 break;
 

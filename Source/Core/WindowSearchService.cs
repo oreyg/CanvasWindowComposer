@@ -30,33 +30,11 @@ internal sealed class WindowSearchService
         var scored = new List<SearchResult>();
         uint ownPid = (uint)Environment.ProcessId;
         string qLower = query.ToLowerInvariant();
-        var seen = new HashSet<IntPtr>();
 
-        // Canvas windows
-        foreach (var (hWnd, world) in _canvas.Windows)
-        {
-            uint pid = _pos.GetWindowProcessId(hWnd);
-            if (pid == ownPid) continue;
-            seen.Add(hWnd);
-
-            string title = GetWindowTitle(hWnd);
-            var (procName, exeName) = GetProcessInfo(hWnd);
-
-            int score = ScoreMatch(title, procName, exeName, qLower);
-            if (score > 0)
-            {
-                string display = string.IsNullOrEmpty(title)
-                    ? $"{procName} ({exeName})"
-                    : $"{title} — {procName}";
-                scored.Add(new SearchResult(hWnd, display, world, score));
-            }
-        }
-
-        // Minimized windows not in canvas
         _pos.EnumWindows(hWnd =>
         {
-            if (seen.Contains(hWnd)) return true;
-            if (!_pos.IsManageable(hWnd, ownPid, allowMinimized: true)) return true;
+            if (!_pos.IsManageable(hWnd, ownPid, allowMinimized: true))
+                return true;
 
             string title = GetWindowTitle(hWnd);
             if (string.IsNullOrEmpty(title)) return true;
@@ -64,8 +42,10 @@ internal sealed class WindowSearchService
             var (procName, exeName) = GetProcessInfo(hWnd);
             int score = ScoreMatch(title, procName, exeName, qLower);
             if (score > 0)
-                scored.Add(new SearchResult(hWnd, $"{title} — {procName}", default, score));
-
+            {
+                _canvas.Windows.TryGetValue(hWnd, out var world); // default WorldRect if not tracked
+                scored.Add(new SearchResult(hWnd, $"{title} — {procName}", world, score));
+            }
             return true;
         });
 

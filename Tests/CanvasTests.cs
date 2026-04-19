@@ -277,7 +277,7 @@ public class CanvasTests
         canvas.SetWindow((IntPtr)1, 100, 200, 800, 600);
         canvas.SetWindow((IntPtr)1, 999, 888, 400, 300);
 
-        Assert.Equal(1, canvas.Windows.Count);
+        Assert.Single(canvas.Windows);
         var world = canvas.Windows[(IntPtr)1];
         Assert.Equal(999, world.X);
         Assert.Equal(888, world.Y);

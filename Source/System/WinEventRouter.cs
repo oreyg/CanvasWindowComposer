@@ -10,6 +10,7 @@ internal sealed class WinEventRouter : IDisposable
 {
     public event Action<IntPtr>? WindowMinimized;   // minimize start
     public event Action<IntPtr>? WindowDestroyed;  // object destroy
+    public event Action<IntPtr>? WindowShown;      // object show (top-level only)
     public event Action<IntPtr>? WindowRestored;   // minimize end
     public event Action<IntPtr>? WindowFocused;    // foreground
     public event Action<IntPtr>? WindowMoved;      // location change (top-level only)
@@ -19,7 +20,7 @@ internal sealed class WinEventRouter : IDisposable
     private readonly UnhookWinEventSafeHandle _hookMinimize;
     private readonly UnhookWinEventSafeHandle _hookForeground;
     private readonly UnhookWinEventSafeHandle _hookSwitch;
-    private readonly UnhookWinEventSafeHandle _hookDestroy;
+    private readonly UnhookWinEventSafeHandle _hookObjectLifetime; // DESTROY + SHOW
     private readonly UnhookWinEventSafeHandle _hookLocationChange;
     private readonly WINEVENTPROC _winEventProc;
 
@@ -44,9 +45,9 @@ internal sealed class WinEventRouter : IDisposable
             PInvoke.EVENT_SYSTEM_SWITCHEND,
             null, _winEventProc, 0, 0, flags);
 
-        _hookDestroy = PInvoke.SetWinEventHook(
-            PInvoke.EVENT_OBJECT_DESTROY,
-            PInvoke.EVENT_OBJECT_DESTROY,
+        _hookObjectLifetime = PInvoke.SetWinEventHook(
+            PInvoke.EVENT_OBJECT_DESTROY, // 0x8001
+            PInvoke.EVENT_OBJECT_SHOW,    // 0x8002 — adjacent, one hook covers both
             null, _winEventProc, 0, 0, flags);
 
         _hookLocationChange = PInvoke.SetWinEventHook(
@@ -65,7 +66,15 @@ internal sealed class WinEventRouter : IDisposable
                 break;
 
             case PInvoke.EVENT_OBJECT_DESTROY:
-                WindowDestroyed?.Invoke(hwnd);
+                // Fires for any child object; only forward top-level window destruction.
+                if (idObject == (int)OBJECT_IDENTIFIER.OBJID_WINDOW)
+                    WindowDestroyed?.Invoke(hwnd);
+                break;
+
+            case PInvoke.EVENT_OBJECT_SHOW:
+                // Same — filter out tooltips, menus, child controls becoming visible.
+                if (idObject == (int)OBJECT_IDENTIFIER.OBJID_WINDOW)
+                    WindowShown?.Invoke(hwnd);
                 break;
 
             case PInvoke.EVENT_SYSTEM_SWITCHSTART:
@@ -96,7 +105,7 @@ internal sealed class WinEventRouter : IDisposable
         _hookMinimize.Dispose();
         _hookForeground.Dispose();
         _hookSwitch.Dispose();
-        _hookDestroy.Dispose();
+        _hookObjectLifetime.Dispose();
         _hookLocationChange.Dispose();
     }
 }

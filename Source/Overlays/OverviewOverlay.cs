@@ -31,7 +31,7 @@ internal sealed class OverviewOverlay : Form
     public Action<OverviewOverlay, MouseEventArgs>? OnMouseMoved;
     public Action<OverviewOverlay, MouseEventArgs>? OnMouseButtonUp;
     public Action<OverviewOverlay, MouseEventArgs>? OnWheel;
-    public Action<OverviewOverlay, MouseEventArgs>? OnDoubleClick;
+    public Action<OverviewOverlay, MouseEventArgs>? OnMouseDoubleClicked;
 
     protected override CreateParams CreateParams
     {
@@ -60,7 +60,7 @@ internal sealed class OverviewOverlay : Form
         MouseMove += (s, e) => OnMouseMoved?.Invoke(this, e);
         MouseUp += (s, e) => OnMouseButtonUp?.Invoke(this, e);
         MouseWheel += (s, e) => OnWheel?.Invoke(this, e);
-        MouseDoubleClick += (s, e) => OnDoubleClick?.Invoke(this, e);
+        MouseDoubleClick += (s, e) => OnMouseDoubleClicked?.Invoke(this, e);
     }
 
     /// <summary>Ensure HWND and swap chain are created, sized to the monitor.</summary>

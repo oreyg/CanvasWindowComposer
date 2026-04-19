@@ -125,7 +125,7 @@ internal sealed class Win32WindowApi : IWindowApi
         _ = PInvoke.SetWindowRgn((HWND)hWnd, (HRGN)IntPtr.Zero, true);
     }
 
-    public void BatchMove(List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)> items, bool allowAsync)
+    public void BatchMove(List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)> items, bool isAsync, bool isTransient)
     {
         if (items.Count == 0)
             return;
@@ -136,8 +136,9 @@ internal sealed class Win32WindowApi : IWindowApi
         foreach (var (hWnd, x, y, w, h, posOnly) in items)
         {
             SET_WINDOW_POS_FLAGS flags = SET_WINDOW_POS_FLAGS.SWP_NOZORDER | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE;
-            if (posOnly) flags |= SET_WINDOW_POS_FLAGS.SWP_NOSIZE;
-            if (allowAsync) flags |= SET_WINDOW_POS_FLAGS.SWP_NOSENDCHANGING | SET_WINDOW_POS_FLAGS.SWP_ASYNCWINDOWPOS;
+            if (posOnly)     flags |= SET_WINDOW_POS_FLAGS.SWP_NOSIZE;
+            if (isAsync)     flags |= SET_WINDOW_POS_FLAGS.SWP_ASYNCWINDOWPOS;
+            if (isTransient) flags |= SET_WINDOW_POS_FLAGS.SWP_NOSENDCHANGING;
 
             HWND target = (HWND)hWnd;
             if (useBatch)

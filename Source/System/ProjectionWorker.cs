@@ -25,7 +25,8 @@ internal sealed class ProjectionWorker : IDisposable
     private sealed class Job
     {
         public required List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)> Items;
-        public bool AllowAsync;
+        public bool IsTransient;
+        public bool IsAsync;
     }
 
     public ProjectionWorker(IWindowApi pos)
@@ -42,9 +43,10 @@ internal sealed class ProjectionWorker : IDisposable
     /// <summary>UI thread: hand off the latest batch. Overwrites any earlier pending batch.</summary>
     public void Schedule(
         List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)> items,
-        bool allowAsync)
+        bool isAsync,
+        bool isTransient)
     {
-        Volatile.Write(ref _pending, new Job { Items = items, AllowAsync = allowAsync });
+        Volatile.Write(ref _pending, new Job { Items = items, IsAsync = isAsync, IsTransient = isTransient });
         _signal.Set();
     }
 
@@ -64,7 +66,7 @@ internal sealed class ProjectionWorker : IDisposable
 
             Job? job = Interlocked.Exchange(ref _pending, null);
             if (job != null)
-                _pos.BatchMove(job.Items, job.AllowAsync);
+                _pos.BatchMove(job.Items, isAsync: job.IsAsync, isTransient: job.IsTransient);
         }
     }
 

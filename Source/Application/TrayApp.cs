@@ -101,13 +101,14 @@ internal sealed class TrayApp : ApplicationContext
         _mouseHook.Install();
 
         _winEvents = new WinEventRouter();
-        _winEvents.WindowMinimized += OnWindowMinimized;
+        _winEvents.AltTabEnded     += OnAltTabEnded;
+        _winEvents.AltTabStarted   += OnAltTabStarted;
         _winEvents.WindowDestroyed += OnWindowDestroyed;
-        _winEvents.AltTabStarted += OnAltTabStarted;
-        _winEvents.AltTabEnded += OnAltTabEnded;
-        _winEvents.WindowRestored += OnWindowRestored;
-        _winEvents.WindowFocused += OnWindowFocused;
-        _winEvents.WindowMoved += OnWindowMoved;
+        _winEvents.WindowFocused   += OnWindowFocused;
+        _winEvents.WindowMinimized += OnWindowMinimized;
+        _winEvents.WindowMoved     += OnWindowMoved;
+        _winEvents.WindowRestored  += OnWindowRestored;
+        _winEvents.WindowShown     += OnWindowShown;
     }
 
     private void OnOverviewModeChanged(OverviewManager.Mode from, OverviewManager.Mode to)
@@ -137,7 +138,7 @@ internal sealed class TrayApp : ApplicationContext
         long ticksNow = Environment.TickCount64;
         if (ticksNow - _lastReprojectTick > ReprojectTimerIntervalMs)
         {
-            _wm.Reproject(allowAsync: false);
+            _wm.Reproject(isTransient: true);
             _lastReprojectTick = ticksNow;
         }
     }
@@ -200,9 +201,15 @@ internal sealed class TrayApp : ApplicationContext
         _wm.ReprojectWindow(hWnd);
     }
 
-    private void OnWindowDestroyed(IntPtr _)
+    private void OnWindowDestroyed(IntPtr hWnd)
     {
         _lastWindowLostTick = Environment.TickCount64;
+        _wm.RemoveWindow(hWnd);
+    }
+
+    private void OnWindowShown(IntPtr hWnd)
+    {
+        _wm.TryRegisterWindow(hWnd);
     }
 
     private void OnAltTabStarted()
@@ -226,7 +233,7 @@ internal sealed class TrayApp : ApplicationContext
     private void OnWindowFocused(IntPtr hwnd)
     {
         long now = Environment.TickCount64;
-        if (now - _lastWindowLostTick < ForegroundSuppressionMs ||
+        if (now - _lastWindowLostTick    < ForegroundSuppressionMs ||
             now - _lastOverlayClosedTick < ForegroundSuppressionMs)
             return;
 
