@@ -5,20 +5,20 @@ namespace CanvasDesktop.Tests;
 
 internal sealed class FakeOverviewController : IOverviewController
 {
-    public event Action<OverviewManager.Mode, OverviewManager.Mode>? BeforeModeChanged;
+    public event Action<OverviewMode, OverviewMode>? BeforeModeChanged;
 
     public List<IntPtr> Monitors = new();
-    public OverviewManager.Mode CurrentMode { get; private set; } = OverviewManager.Mode.Hidden;
+    public OverviewMode CurrentMode { get; private set; } = OverviewMode.Hidden;
 
     public int CancelInertiaCalls;
     public int SyncCameraCalls;
     public int ReleaseInertiaCalls;
     public List<(int dx, int dy)> RecordedDeltas = new();
-    public List<OverviewManager.Mode> Transitions = new();
+    public List<OverviewMode> Transitions = new();
 
     public IReadOnlyList<IntPtr> MonitorHandles { get { return Monitors; } }
 
-    public void TransitionTo(OverviewManager.Mode target, bool syncCameraOnClose = true)
+    public void TransitionTo(OverviewMode target, bool syncCameraOnClose = true)
     {
         Transitions.Add(target);
         if (target == CurrentMode) return;

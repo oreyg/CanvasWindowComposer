@@ -9,10 +9,10 @@ namespace CanvasDesktop;
 /// </summary>
 internal interface IOverviewController
 {
-    event Action<OverviewManager.Mode, OverviewManager.Mode>? BeforeModeChanged;
+    event Action<OverviewMode, OverviewMode>? BeforeModeChanged;
     IReadOnlyList<IntPtr> MonitorHandles { get; }
-    OverviewManager.Mode CurrentMode { get; }
-    void TransitionTo(OverviewManager.Mode target, bool syncCameraOnClose = true);
+    OverviewMode CurrentMode { get; }
+    void TransitionTo(OverviewMode target, bool syncCameraOnClose = true);
     void CancelInertia();
     void SyncCamera();
     void RecordPanDelta(int dx, int dy);

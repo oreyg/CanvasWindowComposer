@@ -11,57 +11,22 @@ namespace CanvasDesktop;
 /// </summary>
 internal sealed class OverviewManager : IDisposable, IOverviewController
 {
-    public enum Mode { Hidden, Panning, Zooming }
-
-    private readonly record struct ModeConfig(
-        bool GridVisible,
-        byte DesktopOpacity,
-        bool TaskbarVisible,
-        bool InputEnabled,
-        bool InertiaAllowed);
-
-    private static readonly ModeConfig HiddenCfg = new(
-        GridVisible: false,
-        DesktopOpacity: 0,
-        TaskbarVisible: false,
-        InputEnabled: false,
-        InertiaAllowed: false);
-
-    private static readonly ModeConfig PanningCfg = new(
-        GridVisible: false,
-        DesktopOpacity: 255,
-        TaskbarVisible: true,
-        InputEnabled: false,
-        InertiaAllowed: true);
-
-    private static readonly ModeConfig ZoomingCfg = new(
-        GridVisible: true,
-        DesktopOpacity: 120,
-        TaskbarVisible: false,
-        InputEnabled: true,
-        InertiaAllowed: false);
-
     private readonly Canvas _mainCanvas;
     private readonly WindowManager _wm;
     private readonly IWindowApi _pos;
     private readonly IScreens _screens;
     private readonly IInputRouter _input;
+    private readonly OverviewState _state = new();
+    private readonly OverviewCamera _camera;
 
-    public Mode CurrentMode { get; private set; } = Mode.Hidden;
-    private ModeConfig _cfg = HiddenCfg;
+    public OverviewMode CurrentMode { get { return _state.CurrentMode; } }
+    private OverviewModeConfig _cfg { get { return _state.CurrentConfig; } }
 
-    public event Action<Mode, Mode>? BeforeModeChanged;
-    public event Action<Mode, Mode>? AfterModeChanged;
+    public event Action<OverviewMode, OverviewMode>? BeforeModeChanged;
+    public event Action<OverviewMode, OverviewMode>? AfterModeChanged;
 
-    // Camera (world coords). Same semantics as before: world origin maps to
-    // virtual-screen (0,0) when _camX == _camY == 0 at zoom 1.
-    private double _camX, _camY, _zoom = 1.0;
-    private const double ZoomMin = 0.05;
-    private const double ZoomMax = 1.0;
-    private const double ZoomStep = 0.1;
     private const double ExtentsPaddingRatio = 0.1;
     private const double MouseWheelDeltaPerNotch = 120.0;
-    private const double ZoomEpsilon = 0.0001;
     private const byte DesktopOpacityZoomedMin = 30;
 
     private readonly InertiaTracker _inertia = new();
@@ -85,8 +50,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
     // Shared ordered list of canvas windows shown in the overview
     // (arrow navigation, hit testing). Refreshed on Show.
-    private readonly List<(IntPtr hWnd, WorldRect world)> _visibleWindows = new();
-    private int _selectedIndex = -1;
+    private readonly OverviewWindowList _windows;
 
     // Pan/drag state (virtual-screen coords)
     private bool _panning;
@@ -95,18 +59,6 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
     private int _dragIndex = -1;
     private int _dragStartVx, _dragStartVy;
 
-    /// <summary>Camera position matching the centered viewport frame in the shader.</summary>
-    private (double x, double y) ViewportCamera
-    {
-        get
-        {
-            var vs = _screens.VirtualScreen;
-            double ox = vs.Width * (1.0 / _zoom - 1.0) / 2.0;
-            double oy = vs.Height * (1.0 / _zoom - 1.0) / 2.0;
-            return (_camX + ox, _camY + oy);
-        }
-    }
-
     public OverviewManager(Canvas mainCanvas, WindowManager wm, IWindowApi positioner, IInputRouter input, IScreens? screens = null)
     {
         _mainCanvas = mainCanvas;
@@ -114,6 +66,8 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         _pos = positioner;
         _input = input;
         _screens = screens ?? WinFormsScreens.Instance;
+        _camera = new OverviewCamera(_screens);
+        _windows = new OverviewWindowList(mainCanvas, positioner);
 
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
 
@@ -125,11 +79,11 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
     {
         // Monitor topology changed — rebuild passes to match. If overview is
         // open, close it, rebuild, reopen in the previous mode.
-        Mode prev = CurrentMode;
-        bool wasVisible = prev != Mode.Hidden;
+        OverviewMode prev = CurrentMode;
+        bool wasVisible = prev != OverviewMode.Hidden;
 
         if (wasVisible)
-            TransitionTo(Mode.Hidden, syncCameraOnClose: false);
+            TransitionTo(OverviewMode.Hidden, syncCameraOnClose: false);
 
         foreach (var p in _passes)
         {
@@ -177,9 +131,9 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
     public void ReleaseInertia()
     {
-        if (!_inertia.Release() && CurrentMode != Mode.Hidden)
+        if (!_inertia.Release() && CurrentMode != OverviewMode.Hidden)
         {
-            TransitionTo(Mode.Hidden);
+            TransitionTo(OverviewMode.Hidden);
         }
     }
 
@@ -201,7 +155,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         if (stopped)
         {
             if (_passes.Count > 0 && _passes[0].IsHandleCreated)
-                _passes[0].BeginInvoke(() => { if (CurrentMode != Mode.Hidden) TransitionTo(Mode.Hidden); });
+                _passes[0].BeginInvoke(() => { if (CurrentMode != OverviewMode.Hidden) TransitionTo(OverviewMode.Hidden); });
             return;
         }
 
@@ -239,39 +193,27 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
     /// <summary>Sync overview camera to the main canvas and update visuals on all passes.</summary>
     public void SyncCamera()
     {
-        if (CurrentMode == Mode.Hidden) return;
-        _camX = _mainCanvas.CamX;
-        _camY = _mainCanvas.CamY;
-        _zoom = _mainCanvas.Zoom;
+        if (CurrentMode == OverviewMode.Hidden) return;
+        _camera.SyncFrom(_mainCanvas);
 
         foreach (var p in _passes)
-            p.Grid?.UpdateCamera(_camX, _camY, _zoom);
+            p.Grid?.UpdateCamera(_camera.X, _camera.Y, _camera.Zoom);
         UpdateAllThumbnails();
     }
 
     /// <summary>Single entry point for every mode change.</summary>
-    public void TransitionTo(Mode target, bool syncCameraOnClose = true)
+    public void TransitionTo(OverviewMode target, bool syncCameraOnClose = true)
     {
         _inertia.Cancel();
 
-        if (CurrentMode == target) return;
-
-        Mode from = CurrentMode;
-        ModeConfig cfg = target switch
-        {
-            Mode.Panning => PanningCfg,
-            Mode.Zooming => ZoomingCfg,
-            _            => HiddenCfg
-        };
-
-        _cfg = cfg;
-        CurrentMode = target;
+        OverviewMode from = CurrentMode;
+        if (!_state.SetMode(target)) return;
 
         BeforeModeChanged?.Invoke(from, target);
 
-        if (target == Mode.Hidden)
-            HideInternal(syncCamera: syncCameraOnClose && from != Mode.Hidden);
-        else if (from == Mode.Hidden)
+        if (target == OverviewMode.Hidden)
+            HideInternal(syncCamera: syncCameraOnClose && from != OverviewMode.Hidden);
+        else if (from == OverviewMode.Hidden)
             ShowInternal();
         else
             ApplyConfig();
@@ -285,14 +227,12 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         foreach (var p in _passes)
             p.Warmup();
 
-        _camX = _mainCanvas.CamX;
-        _camY = _mainCanvas.CamY;
-        _zoom = _mainCanvas.Zoom;
+        _camera.SyncFrom(_mainCanvas);
 
         _wm.SuspendGreedyDraw = true;
         _wm.UnclipAll();
 
-        RefreshVisibleWindows();
+        _windows.Refresh();
         foreach (var p in _passes)
         {
             RegisterDesktopThumbnail(p);
@@ -301,7 +241,6 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         }
 
         ApplyConfig();
-        _selectedIndex = -1;
 
         foreach (var p in _passes)
         {
@@ -314,7 +253,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
             _passes[0].Grid!.OnFrameTick = OnGridFrameTick;
 
         foreach (var p in _passes)
-            p.Grid?.Start(_camX, _camY, _zoom);
+            p.Grid?.Start(_camera.X, _camera.Y, _camera.Zoom);
     }
 
     private void HideInternal(bool syncCamera)
@@ -327,7 +266,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
         if (syncCamera)
         {
-            var (vx, vy) = ViewportCamera;
+            var (vx, vy) = _camera.ViewportCamera;
             _mainCanvas.SetCamera(vx, vy);
         }
 
@@ -341,7 +280,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
             UnregisterWindowThumbnails(p);
             UnregisterDesktopThumbnail(p);
         }
-        _visibleWindows.Clear();
+        _windows.Clear();
     }
 
     private void ApplyConfig()
@@ -352,22 +291,6 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
             p.SetClickThrough(!_cfg.InputEnabled);
         }
         UpdateAllThumbnails();
-    }
-
-    /// <summary>Rebuild the shared list of windows to show, sorted by Z-order.</summary>
-    private void RefreshVisibleWindows()
-    {
-        _visibleWindows.Clear();
-        // Use EnumWindows for Z-order; filter to canvas windows in Normal state.
-        _pos.EnumWindows(hWnd =>
-        {
-            if (_mainCanvas.Windows.TryGetValue(hWnd, out var world) &&
-                world.State == CanvasDesktop.WindowState.Normal)
-            {
-                _visibleWindows.Add((hWnd, world));
-            }
-            return true;
-        });
     }
 
     // ==================== THUMBNAILS ====================
@@ -395,9 +318,9 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         if (pass.DesktopThumb == IntPtr.Zero) return;
 
         byte opacity = _cfg.DesktopOpacity;
-        if (CurrentMode == Mode.Zooming)
+        if (CurrentMode == OverviewMode.Zooming)
         {
-            double t = (_zoom - ZoomMin) / (ZoomMax - ZoomMin);
+            double t = (_camera.Zoom - OverviewCamera.ZoomMin) / (OverviewCamera.ZoomMax - OverviewCamera.ZoomMin);
             t = Math.Clamp(t, 0.0, 1.0);
             double min = DesktopOpacityZoomedMin;
             double max = _cfg.DesktopOpacity;
@@ -499,29 +422,26 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
     private void RegisterWindowThumbnails(OverviewOverlay pass)
     {
-        // _visibleWindows is topmost-first (EnumWindows order). Register
+        // _windows is topmost-first (EnumWindows order). Register
         // bottom-to-top so the topmost window's thumbnail draws last (on top).
-        for (int i = _visibleWindows.Count - 1; i >= 0; i--)
+        for (int i = _windows.Count - 1; i >= 0; i--)
         {
-            var (hWnd, world) = _visibleWindows[i];
-            HRESULT hr = PInvoke.DwmRegisterThumbnail((HWND)pass.Handle, (HWND)hWnd, out nint thumb);
-            if (hr.Succeeded) pass.Thumbnails.Add((hWnd, thumb, world));
+            var entry = _windows.Windows[i];
+            HRESULT hr = PInvoke.DwmRegisterThumbnail((HWND)pass.Handle, (HWND)entry.HWnd, out nint thumb);
+            if (hr.Succeeded) pass.Thumbnails.Add((entry.HWnd, thumb, entry.World));
         }
     }
 
     /// <summary>
-    /// Raise the window at the given _visibleWindows index in both the system
+    /// Raise the window at the given _windows index in both the system
     /// z-order and the overview thumbnail draw order; move its entry to index 0.
     /// </summary>
     private void BringWindowToFront(int index)
     {
-        if (index <= 0 || index >= _visibleWindows.Count) return;
+        if (index <= 0 || index >= _windows.Count) return;
 
-        IntPtr hWnd = _visibleWindows[index].hWnd;
-
-        var entry = _visibleWindows[index];
-        _visibleWindows.RemoveAt(index);
-        _visibleWindows.Insert(0, entry);
+        IntPtr hWnd = _windows.Windows[index].HWnd;
+        _windows.MoveToFront(index);
 
         // System z-order — HWND_TOP (0), no move/size/activate
         PInvoke.SetWindowPos((HWND)hWnd, HWND.Null, 0, 0, 0, 0,
@@ -573,18 +493,19 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
     private void UpdateWindowThumbnails(OverviewOverlay pass)
     {
+        double zoom = _camera.Zoom;
         foreach (var (hWnd, thumb, world) in pass.Thumbnails)
         {
-            int sx = (int)((world.X - _camX) * _zoom);
-            int sy = (int)((world.Y - _camY) * _zoom);
-            int sw = Math.Max(1, (int)(world.W * _zoom));
-            int sh = Math.Max(1, (int)(world.H * _zoom));
+            int sx = (int)((world.X - _camera.X) * zoom);
+            int sy = (int)((world.Y - _camera.Y) * zoom);
+            int sw = Math.Max(1, (int)(world.W * zoom));
+            int sh = Math.Max(1, (int)(world.H * zoom));
 
             var (iL, iT, iR, iB) = _pos.GetFrameInset(hWnd);
-            int fL = (int)(iL * _zoom);
-            int fT = (int)(iT * _zoom);
-            int fR = (int)(iR * _zoom);
-            int fB = (int)(iB * _zoom);
+            int fL = (int)(iL * zoom);
+            int fT = (int)(iT * zoom);
+            int fR = (int)(iR * zoom);
+            int fB = (int)(iB * zoom);
 
             int left   = sx + fL - pass.OriginX;
             int top    = sy + fT - pass.OriginY;
@@ -610,45 +531,43 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
         if (e.KeyCode == Keys.Escape)
         {
-            TransitionTo(Mode.Hidden);
+            TransitionTo(OverviewMode.Hidden);
             e.Handled = true;
             return;
         }
 
-        if (_visibleWindows.Count == 0) return;
+        if (_windows.Count == 0) return;
 
         if (e.KeyCode == Keys.Right || e.KeyCode == Keys.Down)
         {
-            _selectedIndex = (_selectedIndex + 1) % _visibleWindows.Count;
+            _windows.SelectNext();
             NavigateToSelected();
             e.Handled = true;
         }
         else if (e.KeyCode == Keys.Left || e.KeyCode == Keys.Up)
         {
-            _selectedIndex = (_selectedIndex - 1 + _visibleWindows.Count) % _visibleWindows.Count;
+            _windows.SelectPrev();
             NavigateToSelected();
             e.Handled = true;
         }
-        else if (e.KeyCode == Keys.Enter && _selectedIndex >= 0)
+        else if (e.KeyCode == Keys.Enter && _windows.SelectedIndex >= 0)
         {
-            var (hWnd, world) = _visibleWindows[_selectedIndex];
-            GoToWindow(hWnd, world);
+            var entry = _windows.Windows[_windows.SelectedIndex];
+            GoToWindow(entry.HWnd, entry.World);
             e.Handled = true;
         }
     }
 
     private void NavigateToSelected()
     {
-        if (_selectedIndex < 0 || _selectedIndex >= _visibleWindows.Count) return;
-        var (_, world) = _visibleWindows[_selectedIndex];
-        var vs = _screens.VirtualScreen;
+        if (_windows.SelectedIndex < 0 || _windows.SelectedIndex >= _windows.Count) return;
+        var world = _windows.Windows[_windows.SelectedIndex].World;
 
         // Center overview camera on selected window (do NOT change zoom)
-        _camX = world.X + world.W / 2 - vs.Width / (2 * _zoom);
-        _camY = world.Y + world.H / 2 - vs.Height / (2 * _zoom);
+        _camera.CenterOnWorld(world.X, world.Y, world.W, world.H);
 
         foreach (var p in _passes)
-            p.Grid?.UpdateCamera(_camX, _camY, _zoom);
+            p.Grid?.UpdateCamera(_camera.X, _camera.Y, _camera.Zoom);
         UpdateAllThumbnails();
     }
 
@@ -656,7 +575,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
     {
         if (!_cfg.InputEnabled)
         {
-            TransitionTo(Mode.Hidden);
+            TransitionTo(OverviewMode.Hidden);
             return;
         }
 
@@ -665,23 +584,16 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
         if (e.Button == MouseButtons.Left)
         {
-            double wx = vx / _zoom + _camX;
-            double wy = vy / _zoom + _camY;
-
-            // _visibleWindows is topmost-first — iterate forward to hit the topmost window
-            for (int i = 0; i < _visibleWindows.Count; i++)
+            var (wx, wy) = _camera.WorldFromVirtual(vx, vy);
+            int hit = _windows.HitTest(wx, wy);
+            if (hit >= 0)
             {
-                var (_, world) = _visibleWindows[i];
-                if (wx >= world.X && wx <= world.X + world.W &&
-                    wy >= world.Y && wy <= world.Y + world.H)
-                {
-                    BringWindowToFront(i);
-                    _draggingWindow = true;
-                    _dragIndex = 0;
-                    _dragStartVx = vx;
-                    _dragStartVy = vy;
-                    return;
-                }
+                BringWindowToFront(hit);
+                _draggingWindow = true;
+                _dragIndex = 0;
+                _dragStartVx = vx;
+                _dragStartVy = vy;
+                return;
             }
 
             _panning = true;
@@ -703,17 +615,15 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         int vx = e.X + pass.OriginX;
         int vy = e.Y + pass.OriginY;
 
-        if (_draggingWindow && _dragIndex >= 0 && _dragIndex < _visibleWindows.Count)
+        if (_draggingWindow && _dragIndex >= 0 && _dragIndex < _windows.Count)
         {
-            double dx = (vx - _dragStartVx) / _zoom;
-            double dy = (vy - _dragStartVy) / _zoom;
+            double dx = (vx - _dragStartVx) / _camera.Zoom;
+            double dy = (vy - _dragStartVy) / _camera.Zoom;
             _dragStartVx = vx;
             _dragStartVy = vy;
 
-            var (hWnd, world) = _visibleWindows[_dragIndex];
-            world.X += dx;
-            world.Y += dy;
-            _visibleWindows[_dragIndex] = (hWnd, world);
+            _windows.TranslateAt(_dragIndex, dx, dy);
+            var entry = _windows.Windows[_dragIndex];
 
             // Update each pass's matching thumbnail world rect too
             foreach (var p in _passes)
@@ -721,15 +631,15 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
                 for (int i = 0; i < p.Thumbnails.Count; i++)
                 {
                     var (thHwnd, thThumb, thWorld) = p.Thumbnails[i];
-                    if (thHwnd == hWnd)
+                    if (thHwnd == entry.HWnd)
                     {
-                        thWorld.X = world.X; thWorld.Y = world.Y;
+                        thWorld.X = entry.World.X; thWorld.Y = entry.World.Y;
                         p.Thumbnails[i] = (thHwnd, thThumb, thWorld);
                     }
                 }
             }
 
-            _mainCanvas.SetWindow(hWnd, world.X, world.Y, world.W, world.H);
+            _mainCanvas.SetWindow(entry.HWnd, entry.World.X, entry.World.Y, entry.World.W, entry.World.H);
             UpdateAllThumbnails();
         }
         else if (_panning)
@@ -739,13 +649,14 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
             _panStartVx = vx;
             _panStartVy = vy;
 
-            _camX -= dx / _zoom;
-            _camY -= dy / _zoom;
+            double worldDx = dx / _camera.Zoom;
+            double worldDy = dy / _camera.Zoom;
+            _camera.PanByVirtual(dx, dy);
 
             foreach (var p in _passes)
             {
-                p.Grid?.AccumulatePan(dx / _zoom, dy / _zoom);
-                p.Grid?.UpdateCamera(_camX, _camY, _zoom);
+                p.Grid?.AccumulatePan(worldDx, worldDy);
+                p.Grid?.UpdateCamera(_camera.X, _camera.Y, _camera.Zoom);
             }
             UpdateAllThumbnails();
         }
@@ -767,22 +678,13 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         if (!_cfg.InputEnabled) return;
 
         double notches = e.Delta / MouseWheelDeltaPerNotch;
-        double newZoom = Math.Clamp(_zoom + notches * ZoomStep * _zoom, ZoomMin, ZoomMax);
-
-        if (Math.Abs(newZoom - _zoom) < ZoomEpsilon) return;
-
         int vx = e.X + pass.OriginX;
         int vy = e.Y + pass.OriginY;
 
-        // Zoom to cursor (in virtual-screen coords)
-        double worldX = vx / _zoom + _camX;
-        double worldY = vy / _zoom + _camY;
-        _zoom = newZoom;
-        _camX = worldX - vx / _zoom;
-        _camY = worldY - vy / _zoom;
+        if (!_camera.ZoomToCursor(vx, vy, notches)) return;
 
         foreach (var p in _passes)
-            p.Grid?.UpdateCamera(_camX, _camY, _zoom);
+            p.Grid?.UpdateCamera(_camera.X, _camera.Y, _camera.Zoom);
 
         UpdateAllThumbnails();
     }
@@ -794,17 +696,13 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
         int vx = e.X + pass.OriginX;
         int vy = e.Y + pass.OriginY;
-        double wx = vx / _zoom + _camX;
-        double wy = vy / _zoom + _camY;
+        var (wx, wy) = _camera.WorldFromVirtual(vx, vy);
 
-        foreach (var (hWnd, world) in _visibleWindows)
+        int hit = _windows.HitTest(wx, wy);
+        if (hit >= 0)
         {
-            if (wx >= world.X && wx <= world.X + world.W &&
-                wy >= world.Y && wy <= world.Y + world.H)
-            {
-                GoToWindow(hWnd, world);
-                return;
-            }
+            var entry = _windows.Windows[hit];
+            GoToWindow(entry.HWnd, entry.World);
         }
     }
 
@@ -818,15 +716,15 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         var vs = _screens.VirtualScreen;
         _mainCanvas.CenterOn(world.X, world.Y, world.W, world.H, vs.Width, vs.Height);
         PInvoke.SetForegroundWindow((HWND)hWnd);
-        TransitionTo(Mode.Hidden, syncCameraOnClose: false);
+        TransitionTo(OverviewMode.Hidden, syncCameraOnClose: false);
     }
 
     public void Dispose()
     {
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
 
-        if (CurrentMode != Mode.Hidden)
-            TransitionTo(Mode.Hidden, syncCameraOnClose: false);
+        if (CurrentMode != OverviewMode.Hidden)
+            TransitionTo(OverviewMode.Hidden, syncCameraOnClose: false);
         foreach (var p in _passes)
         {
             p.Close();

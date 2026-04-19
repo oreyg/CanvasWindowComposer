@@ -34,7 +34,7 @@ public class ForegroundCoordinatorTests
         var h = new Harness();
         h.Input.RaiseDragStarted();
 
-        Assert.Equal(OverviewManager.Mode.Panning, h.Overview.CurrentMode);
+        Assert.Equal(OverviewMode.Panning, h.Overview.CurrentMode);
     }
 
     [Fact]
@@ -57,7 +57,7 @@ public class ForegroundCoordinatorTests
         h.Input.RaiseDragStarted();
         Assert.Equal(1, h.Input.SetExtraCalls);
 
-        h.Overview.TransitionTo(OverviewManager.Mode.Hidden);
+        h.Overview.TransitionTo(OverviewMode.Hidden);
 
         Assert.Equal(1, h.Input.ClearExtraCalls);
     }
@@ -67,18 +67,18 @@ public class ForegroundCoordinatorTests
     {
         var h = new Harness();
         h.Input.RaiseDragStarted();
-        Assert.Equal(OverviewManager.Mode.Panning, h.Overview.CurrentMode);
+        Assert.Equal(OverviewMode.Panning, h.Overview.CurrentMode);
 
         h.Input.RaiseButtonDown();
 
-        Assert.Equal(OverviewManager.Mode.Hidden, h.Overview.CurrentMode);
+        Assert.Equal(OverviewMode.Hidden, h.Overview.CurrentMode);
     }
 
     [Fact]
     public void MouseButtonDown_NotInPanning_DoesNothing()
     {
         var h = new Harness();
-        Assert.Equal(OverviewManager.Mode.Hidden, h.Overview.CurrentMode);
+        Assert.Equal(OverviewMode.Hidden, h.Overview.CurrentMode);
 
         h.Input.RaiseButtonDown();
 
@@ -117,19 +117,19 @@ public class ForegroundCoordinatorTests
         h.Input.PendingZoom = true;
         h.Input.RaiseInputAvailable();
 
-        Assert.Equal(OverviewManager.Mode.Zooming, h.Overview.CurrentMode);
+        Assert.Equal(OverviewMode.Zooming, h.Overview.CurrentMode);
     }
 
     [Fact]
     public void InputAvailable_Zoom_WhileZooming_HidesOverview()
     {
         var h = new Harness();
-        h.Overview.TransitionTo(OverviewManager.Mode.Zooming);
+        h.Overview.TransitionTo(OverviewMode.Zooming);
 
         h.Input.PendingZoom = true;
         h.Input.RaiseInputAvailable();
 
-        Assert.Equal(OverviewManager.Mode.Hidden, h.Overview.CurrentMode);
+        Assert.Equal(OverviewMode.Hidden, h.Overview.CurrentMode);
     }
 
     // ==================== HOTKEYS ====================
@@ -139,16 +139,16 @@ public class ForegroundCoordinatorTests
     {
         var h = new Harness();
         h.Input.RaiseOverviewHotkey();
-        Assert.Equal(OverviewManager.Mode.Zooming, h.Overview.CurrentMode);
+        Assert.Equal(OverviewMode.Zooming, h.Overview.CurrentMode);
     }
 
     [Fact]
     public void OverviewHotkey_FromZooming_Hides()
     {
         var h = new Harness();
-        h.Overview.TransitionTo(OverviewManager.Mode.Zooming);
+        h.Overview.TransitionTo(OverviewMode.Zooming);
         h.Input.RaiseOverviewHotkey();
-        Assert.Equal(OverviewManager.Mode.Hidden, h.Overview.CurrentMode);
+        Assert.Equal(OverviewMode.Hidden, h.Overview.CurrentMode);
     }
 
     // ==================== WINDOW LIFECYCLE ====================
@@ -319,8 +319,8 @@ public class ForegroundCoordinatorTests
         h.Canvas.SetWindow((IntPtr)1, 5000, 5000, 400, 300);
 
         h.Clock.Now = 10000;
-        h.Overview.TransitionTo(OverviewManager.Mode.Zooming);
-        h.Overview.TransitionTo(OverviewManager.Mode.Hidden);
+        h.Overview.TransitionTo(OverviewMode.Zooming);
+        h.Overview.TransitionTo(OverviewMode.Hidden);
 
         h.Clock.Now = 10100;
         double camBefore = h.Canvas.CamX;

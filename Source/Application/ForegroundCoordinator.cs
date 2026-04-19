@@ -38,9 +38,9 @@ internal sealed class ForegroundCoordinator
         input.WindowMinimized += OnWindowMinimized;
     }
 
-    private void OnOverviewModeChanged(OverviewManager.Mode from, OverviewManager.Mode to)
+    private void OnOverviewModeChanged(OverviewMode from, OverviewMode to)
     {
-        if (to == OverviewManager.Mode.Hidden)
+        if (to == OverviewMode.Hidden)
         {
             _lastOverlayClosedTick = _clock.TickCount64;
             _canvas.Commit();

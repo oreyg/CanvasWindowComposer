@@ -31,9 +31,9 @@ internal sealed class OverviewInputs
         _overview.SyncCamera();
     }
 
-    private void OnOverviewModeChanged(OverviewManager.Mode from, OverviewManager.Mode to)
+    private void OnOverviewModeChanged(OverviewMode from, OverviewMode to)
     {
-        if (to == OverviewManager.Mode.Panning)
+        if (to == OverviewMode.Panning)
             _input.SetExtraPanSurfaces(_overview.MonitorHandles);
         else
             _input.ClearExtraPanSurfaces();
@@ -41,23 +41,23 @@ internal sealed class OverviewInputs
 
     private void OnDragStarted()
     {
-        _overview.TransitionTo(OverviewManager.Mode.Panning);
+        _overview.TransitionTo(OverviewMode.Panning);
     }
 
     private void OnMouseButtonDown()
     {
         // A non-pan click while the panning overview is up — close it so the
         // click interacts with the underlying window normally.
-        if (_overview.CurrentMode == OverviewManager.Mode.Panning)
-            _overview.TransitionTo(OverviewManager.Mode.Hidden);
+        if (_overview.CurrentMode == OverviewMode.Panning)
+            _overview.TransitionTo(OverviewMode.Hidden);
     }
 
     private void OnOverviewHotkey()
     {
-        if (_overview.CurrentMode == OverviewManager.Mode.Zooming)
-            _overview.TransitionTo(OverviewManager.Mode.Hidden);
+        if (_overview.CurrentMode == OverviewMode.Zooming)
+            _overview.TransitionTo(OverviewMode.Hidden);
         else
-            _overview.TransitionTo(OverviewManager.Mode.Zooming);
+            _overview.TransitionTo(OverviewMode.Zooming);
     }
 
     private void OnCanvasInput()
@@ -73,10 +73,10 @@ internal sealed class OverviewInputs
 
         if (_input.TryDrainZoom())
         {
-            if (_overview.CurrentMode == OverviewManager.Mode.Zooming)
-                _overview.TransitionTo(OverviewManager.Mode.Hidden);
+            if (_overview.CurrentMode == OverviewMode.Zooming)
+                _overview.TransitionTo(OverviewMode.Hidden);
             else
-                _overview.TransitionTo(OverviewManager.Mode.Zooming);
+                _overview.TransitionTo(OverviewMode.Zooming);
         }
     }
 }
