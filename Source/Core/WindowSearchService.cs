@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 
 namespace CanvasDesktop;
@@ -23,7 +22,10 @@ internal sealed class WindowSearchService
         _win32 = win32;
     }
 
-    public void ClearCache() => _processCache.Clear();
+    public void ClearCache()
+    {
+        _processCache.Clear();
+    }
 
     public List<SearchResult> Search(string query)
     {
@@ -36,10 +38,10 @@ internal sealed class WindowSearchService
             if (!_win32.IsManageable(hWnd, ownPid, allowMinimized: true))
                 return true;
 
-            string title = GetWindowTitle(hWnd);
+            string title = _win32.GetWindowTitle(hWnd);
             if (string.IsNullOrEmpty(title)) return true;
 
-            var (procName, exeName) = GetProcessInfo(hWnd);
+            var (procName, exeName) = LookupProcess(hWnd);
             int score = ScoreMatch(title, procName, exeName, qLower);
             if (score > 0)
             {
@@ -62,10 +64,10 @@ internal sealed class WindowSearchService
             if (results.Count >= 5) return false;
             if (!_canvas.HasWindow(hWnd)) return true;
 
-            string title = GetWindowTitle(hWnd);
+            string title = _win32.GetWindowTitle(hWnd);
             if (string.IsNullOrEmpty(title)) return true;
 
-            var (procName, _) = GetProcessInfo(hWnd);
+            var (procName, _) = LookupProcess(hWnd);
             string display = $"{title} — {procName}";
             var world = _canvas.Windows[hWnd];
             results.Add(new SearchResult(hWnd, display, world, 0));
@@ -83,41 +85,13 @@ internal sealed class WindowSearchService
         return 0;
     }
 
-    private static unsafe string GetWindowTitle(IntPtr hWnd)
-    {
-        HWND h = (HWND)hWnd;
-        int len = PInvoke.GetWindowTextLength(h);
-        if (len <= 0) return "";
-        Span<char> buffer = len < 512 ? stackalloc char[len + 1] : new char[len + 1];
-        int written;
-        fixed (char* p = buffer)
-        {
-            written = PInvoke.GetWindowText(h, new PWSTR(p), buffer.Length);
-        }
-        return new string(buffer[..written]);
-    }
-
-    private (string name, string exe) GetProcessInfo(IntPtr hWnd)
+    private (string name, string exe) LookupProcess(IntPtr hWnd)
     {
         uint pid = _win32.GetWindowProcessId(hWnd);
-
         if (_processCache.TryGetValue(pid, out var cached))
             return cached;
-
-        string name = "", exe = "";
-        try
-        {
-            using var proc = Process.GetProcessById((int)pid);
-            name = proc.ProcessName;
-            exe = System.IO.Path.GetFileName(proc.MainModule?.FileName ?? name);
-        }
-        catch
-        {
-            name = $"PID {pid}";
-            exe = "";
-        }
-
-        _processCache[pid] = (name, exe);
-        return (name, exe);
+        var info = _win32.GetProcessInfo(pid);
+        _processCache[pid] = info;
+        return info;
     }
 }

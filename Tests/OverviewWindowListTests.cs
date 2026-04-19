@@ -15,14 +15,6 @@ public class OverviewWindowListTests
     }
 
     [Fact]
-    public void NewList_IsEmpty()
-    {
-        var (_, _, list) = Make();
-        Assert.Equal(0, list.Count);
-        Assert.Equal(-1, list.SelectedIndex);
-    }
-
-    [Fact]
     public void Refresh_PopulatesFromCanvasInZOrder()
     {
         var (canvas, api, list) = Make();

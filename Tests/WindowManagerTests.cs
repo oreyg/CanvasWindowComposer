@@ -228,14 +228,18 @@ public class WindowManagerTests
     {
         var (canvas, api, wm) = Create();
 
+        // Pre-tracked at world (100, 100); the API has it at a different
+        // screen rect. If discover wrongly registered it again, SetWindowFromScreen
+        // would overwrite the world coords with the API's rect.
         canvas.SetWindow((IntPtr)1, 100, 100, 800, 600);
-        api.AddWindow((IntPtr)1, 100, 100, 800, 600, pid: 999);
+        api.AddWindow((IntPtr)1, 999, 888, 800, 600, pid: 999);
 
         wm.DiscoverNewWindows();
 
-        // Position should not change — window was already tracked
+        Assert.Single(canvas.Windows);
         var world = canvas.Windows[(IntPtr)1];
         Assert.Equal(100, world.X);
+        Assert.Equal(100, world.Y);
     }
 
     [Fact]

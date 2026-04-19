@@ -18,6 +18,13 @@ internal interface IWindowApi
     (int x, int y, int w, int h) GetWindowRect(IntPtr hWnd);
     (int left, int top, int right, int bottom) GetFrameInset(IntPtr hWnd);
     uint GetWindowProcessId(IntPtr hWnd);
+    string GetWindowTitle(IntPtr hWnd);
+
+    /// <summary>
+    /// Returns (process name, exe filename) for <paramref name="pid"/>, or a
+    /// fallback if the process isn't accessible (exited, denied, etc.).
+    /// </summary>
+    (string name, string exe) GetProcessInfo(uint pid);
 
     // Filtering
     bool IsManageable(IntPtr hWnd, uint ownPid, bool allowMinimized = false);

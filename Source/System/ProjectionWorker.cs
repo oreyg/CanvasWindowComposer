@@ -16,7 +16,7 @@ namespace CanvasDesktop;
 /// </summary>
 internal sealed class ProjectionWorker : IDisposable
 {
-    private readonly IWindowApi _pos;
+    private readonly IWindowApi _win32;
     private readonly Thread _thread;
     private readonly ManualResetEventSlim _signal = new(false);
     private volatile bool _alive = true;
@@ -29,9 +29,9 @@ internal sealed class ProjectionWorker : IDisposable
         public bool IsAsync;
     }
 
-    public ProjectionWorker(IWindowApi pos)
+    public ProjectionWorker(IWindowApi win32)
     {
-        _pos = pos;
+        _win32 = win32;
         _thread = new Thread(Loop)
         {
             IsBackground = true,
@@ -66,7 +66,7 @@ internal sealed class ProjectionWorker : IDisposable
 
             Job? job = Interlocked.Exchange(ref _pending, null);
             if (job != null)
-                _pos.BatchMove(job.Items, isAsync: job.IsAsync, isTransient: job.IsTransient);
+                _win32.BatchMove(job.Items, isAsync: job.IsAsync, isTransient: job.IsTransient);
         }
     }
 

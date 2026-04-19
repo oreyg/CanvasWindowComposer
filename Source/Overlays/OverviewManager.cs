@@ -13,7 +13,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 {
     private readonly Canvas _mainCanvas;
     private readonly WindowManager _wm;
-    private readonly IWindowApi _pos;
+    private readonly IWindowApi _win32;
     private readonly IScreens _screens;
     private readonly IInputRouter _input;
     private readonly OverviewState _state = new();
@@ -59,15 +59,15 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
     private int _dragIndex = -1;
     private int _dragStartVx, _dragStartVy;
 
-    public OverviewManager(Canvas mainCanvas, WindowManager wm, IWindowApi positioner, IInputRouter input, IScreens? screens = null)
+    public OverviewManager(Canvas mainCanvas, WindowManager wm, IWindowApi win32, IInputRouter input, IScreens? screens = null)
     {
         _mainCanvas = mainCanvas;
         _wm = wm;
-        _pos = positioner;
+        _win32 = win32;
         _input = input;
         _screens = screens ?? WinFormsScreens.Instance;
         _camera = new OverviewCamera(_screens);
-        _windows = new OverviewWindowList(mainCanvas, positioner);
+        _windows = new OverviewWindowList(mainCanvas, win32);
 
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
 
@@ -501,7 +501,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
             int sw = Math.Max(1, (int)(world.W * zoom));
             int sh = Math.Max(1, (int)(world.H * zoom));
 
-            var (iL, iT, iR, iB) = _pos.GetFrameInset(hWnd);
+            var (iL, iT, iR, iB) = _win32.GetFrameInset(hWnd);
             int fL = (int)(iL * zoom);
             int fT = (int)(iT * zoom);
             int fR = (int)(iR * zoom);

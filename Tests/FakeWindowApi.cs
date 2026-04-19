@@ -12,6 +12,7 @@ internal sealed class FakeWindowApi : IWindowApi
         public bool Visible = true;
         public uint ProcessId = 1;
         public bool Manageable = true;
+        public string Title = "";
     }
 
     public readonly Dictionary<IntPtr, WindowInfo> Windows = new();
@@ -24,12 +25,12 @@ internal sealed class FakeWindowApi : IWindowApi
     public List<IntPtr> EnumOrder = new();
 
     public void AddWindow(IntPtr hWnd, int x, int y, int w, int h,
-        uint pid = 1, int style = 0, bool manageable = true)
+        uint pid = 1, int style = 0, bool manageable = true, string title = "")
     {
         Windows[hWnd] = new WindowInfo
         {
             X = x, Y = y, W = w, H = h,
-            ProcessId = pid, Style = style, Manageable = manageable
+            ProcessId = pid, Style = style, Manageable = manageable, Title = title
         };
         if (!EnumOrder.Contains(hWnd))
             EnumOrder.Add(hWnd);
@@ -51,6 +52,17 @@ internal sealed class FakeWindowApi : IWindowApi
 
     public uint GetWindowProcessId(IntPtr hWnd) =>
         Windows.TryGetValue(hWnd, out var w) ? w.ProcessId : 0;
+
+    public string GetWindowTitle(IntPtr hWnd) =>
+        Windows.TryGetValue(hWnd, out var w) ? w.Title : "";
+
+    public Dictionary<uint, (string name, string exe)> Processes = new();
+    public (string name, string exe) ProcessFallback = ("", "");
+
+    public (string name, string exe) GetProcessInfo(uint pid)
+    {
+        return Processes.TryGetValue(pid, out var info) ? info : ProcessFallback;
+    }
 
     public bool IsManageable(IntPtr hWnd, uint ownPid, bool allowMinimized = false)
     {

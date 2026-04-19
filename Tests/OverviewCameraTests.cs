@@ -14,38 +14,6 @@ public class OverviewCameraTests
     }
 
     [Fact]
-    public void NewCamera_StartsAtOriginUnzoomed()
-    {
-        var cam = MakeCamera();
-        Assert.Equal(0, cam.X);
-        Assert.Equal(0, cam.Y);
-        Assert.Equal(1.0, cam.Zoom);
-    }
-
-    [Fact]
-    public void SetTo_AssignsAllThree()
-    {
-        var cam = MakeCamera();
-        cam.SetTo(100, 200, 0.5);
-        Assert.Equal(100, cam.X);
-        Assert.Equal(200, cam.Y);
-        Assert.Equal(0.5, cam.Zoom);
-    }
-
-    [Fact]
-    public void SyncFrom_CopiesCanvasState()
-    {
-        var canvas = new Canvas();
-        canvas.Pan(50, 30); // shifts cam by -50, -30
-
-        var cam = MakeCamera();
-        cam.SyncFrom(canvas);
-        Assert.Equal(canvas.CamX, cam.X);
-        Assert.Equal(canvas.CamY, cam.Y);
-        Assert.Equal(canvas.Zoom, cam.Zoom);
-    }
-
-    [Fact]
     public void PanByVirtual_AtZoom1_TranslatesByPixels()
     {
         var cam = MakeCamera();

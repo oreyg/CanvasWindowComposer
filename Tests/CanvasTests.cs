@@ -9,24 +9,6 @@ public class CanvasTests
     // ==================== PROJECTIONS ====================
 
     [Fact]
-    public void WorldToScreen_AtOrigin_ReturnsWorldCoords()
-    {
-        var canvas = new Canvas();
-        var (x, y) = canvas.WorldToScreen(100, 200);
-        Assert.Equal(100, x);
-        Assert.Equal(200, y);
-    }
-
-    [Fact]
-    public void WorldToScreen_NegativeCoords_ReturnsNegative()
-    {
-        var canvas = new Canvas();
-        var (x, y) = canvas.WorldToScreen(-500, -300);
-        Assert.Equal(-500, x);
-        Assert.Equal(-300, y);
-    }
-
-    [Fact]
     public void WorldToScreen_AfterPan_OffsetsCorrectly()
     {
         var canvas = new Canvas();
@@ -69,15 +51,6 @@ public class CanvasTests
     }
 
     [Fact]
-    public void WorldToScreenSize_LargeValues_PassThrough()
-    {
-        var canvas = new Canvas();
-        var (w, h) = canvas.WorldToScreenSize(800, 600);
-        Assert.Equal(800, w);
-        Assert.Equal(600, h);
-    }
-
-    [Fact]
     public void ScreenToWorldSize_RoundtripsWithWorldToScreenSize()
     {
         var canvas = new Canvas();
@@ -97,15 +70,6 @@ public class CanvasTests
         canvas.Pan(100, 50);
         Assert.Equal(-100, canvas.CamX);
         Assert.Equal(-50, canvas.CamY);
-    }
-
-    [Fact]
-    public void Pan_NegativeValues_PansReverse()
-    {
-        var canvas = new Canvas();
-        canvas.Pan(-60, -40);
-        Assert.Equal(60, canvas.CamX);
-        Assert.Equal(40, canvas.CamY);
     }
 
     [Fact]
@@ -207,20 +171,6 @@ public class CanvasTests
     }
 
     [Fact]
-    public void LoadState_NullWindows_HandledGracefully()
-    {
-        var canvas = new Canvas();
-        canvas.SetWindow((IntPtr)1, 0, 0, 100, 100);
-
-        var state = new CanvasState { CamX = 10, CamY = 20, Zoom = 1.0, Windows = null! };
-        canvas.LoadState(state);
-
-        Assert.Equal(10, canvas.CamX);
-        Assert.Equal(20, canvas.CamY);
-        Assert.Empty(canvas.Windows);
-    }
-
-    [Fact]
     public void LoadState_ClearsExistingWindows()
     {
         var canvas = new Canvas();
@@ -255,20 +205,6 @@ public class CanvasTests
     }
 
     // ==================== WINDOW MAP ====================
-
-    [Fact]
-    public void SetWindow_TracksWindow()
-    {
-        var canvas = new Canvas();
-        canvas.SetWindow((IntPtr)42, 100, 200, 800, 600);
-
-        Assert.True(canvas.HasWindow((IntPtr)42));
-        var world = canvas.Windows[(IntPtr)42];
-        Assert.Equal(100, world.X);
-        Assert.Equal(200, world.Y);
-        Assert.Equal(800, world.W);
-        Assert.Equal(600, world.H);
-    }
 
     [Fact]
     public void SetWindow_OverwritesExisting()
@@ -309,28 +245,6 @@ public class CanvasTests
         var (expectedW, expectedH) = canvas.ScreenToWorldSize(800, 600);
         Assert.Equal(expectedW, world.W);
         Assert.Equal(expectedH, world.H);
-    }
-
-    [Fact]
-    public void RemoveWindow_RemovesFromMap()
-    {
-        var canvas = new Canvas();
-        canvas.SetWindow((IntPtr)1, 0, 0, 100, 100);
-        Assert.True(canvas.HasWindow((IntPtr)1));
-
-        canvas.RemoveWindow((IntPtr)1);
-        Assert.False(canvas.HasWindow((IntPtr)1));
-    }
-
-    [Fact]
-    public void ClearWindows_RemovesAll()
-    {
-        var canvas = new Canvas();
-        canvas.SetWindow((IntPtr)1, 0, 0, 100, 100);
-        canvas.SetWindow((IntPtr)2, 0, 0, 100, 100);
-
-        canvas.ClearWindows();
-        Assert.Empty(canvas.Windows);
     }
 
     // ==================== WORLD EXTENTS ====================

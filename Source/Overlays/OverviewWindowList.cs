@@ -16,17 +16,17 @@ internal sealed class OverviewWindowList
     public readonly record struct Entry(IntPtr HWnd, WorldRect World);
 
     private readonly Canvas _canvas;
-    private readonly IWindowApi _api;
+    private readonly IWindowApi _win32;
     private readonly List<Entry> _windows = new();
 
     public IReadOnlyList<Entry> Windows { get { return _windows; } }
     public int Count { get { return _windows.Count; } }
     public int SelectedIndex { get; private set; } = -1;
 
-    public OverviewWindowList(Canvas canvas, IWindowApi api)
+    public OverviewWindowList(Canvas canvas, IWindowApi win32)
     {
         _canvas = canvas;
-        _api = api;
+        _win32 = win32;
     }
 
     /// <summary>Rebuild the list from canvas + Z-order. Resets selection.</summary>
@@ -34,7 +34,7 @@ internal sealed class OverviewWindowList
     {
         _windows.Clear();
         SelectedIndex = -1;
-        _api.EnumWindows(hWnd =>
+        _win32.EnumWindows(hWnd =>
         {
             if (_canvas.Windows.TryGetValue(hWnd, out var world) &&
                 world.State == WindowState.Normal)

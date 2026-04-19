@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 
 namespace CanvasDesktop;
 
@@ -66,6 +68,35 @@ internal sealed class Win32WindowApi : IWindowApi
         uint pid;
         _ = PInvoke.GetWindowThreadProcessId((HWND)hWnd, &pid);
         return pid;
+    }
+
+    public unsafe string GetWindowTitle(IntPtr hWnd)
+    {
+        HWND h = (HWND)hWnd;
+        int len = PInvoke.GetWindowTextLength(h);
+        if (len <= 0) return "";
+        Span<char> buffer = len < 512 ? stackalloc char[len + 1] : new char[len + 1];
+        int written;
+        fixed (char* p = buffer)
+        {
+            written = PInvoke.GetWindowText(h, new PWSTR(p), buffer.Length);
+        }
+        return new string(buffer[..written]);
+    }
+
+    public (string name, string exe) GetProcessInfo(uint pid)
+    {
+        try
+        {
+            using var proc = Process.GetProcessById((int)pid);
+            string name = proc.ProcessName;
+            string exe = Path.GetFileName(proc.MainModule?.FileName ?? name);
+            return (name, exe);
+        }
+        catch
+        {
+            return ($"PID {pid}", "");
+        }
     }
 
     public unsafe bool IsManageable(IntPtr hWnd, uint ownPid, bool allowMinimized = false)

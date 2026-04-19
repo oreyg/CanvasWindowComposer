@@ -38,8 +38,8 @@ internal sealed class DesktopStateCache
 
         if (_lastDesktopId != Guid.Empty)
         {
-            _wm.Reset();
             _states[_lastDesktopId] = _canvas.SaveState();
+            _wm.Reset();
         }
 
         _lastDesktopId = _vds.CurrentDesktopId;
