@@ -73,7 +73,7 @@ public class WindowManagerTests
         canvas.SetWindow((IntPtr)1, 100, 100, 800, 600);
         canvas.MaximizeWindow((IntPtr)1);
         api.AddWindow((IntPtr)1, 0, 0, 800, 600,
-            style: (int)NativeMethods.WS_MAXIMIZE);
+            style: (int)Windows.Win32.UI.WindowsAndMessaging.WINDOW_STYLE.WS_MAXIMIZE);
 
         wm.Reproject();
 
@@ -101,7 +101,7 @@ public class WindowManagerTests
 
         canvas.SetWindow((IntPtr)1, 100, 100, 800, 600);
         api.AddWindow((IntPtr)1, 0, 0, 800, 600,
-            style: (int)NativeMethods.WS_MINIMIZE);
+            style: (int)Windows.Win32.UI.WindowsAndMessaging.WINDOW_STYLE.WS_MINIMIZE);
 
         wm.Reproject();
 

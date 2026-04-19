@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-using System.Text;
 
 namespace CanvasDesktop;
 
@@ -104,13 +103,18 @@ internal sealed class WindowSearchService
         return 0;
     }
 
-    private static string GetWindowTitle(IntPtr hWnd)
+    private static unsafe string GetWindowTitle(IntPtr hWnd)
     {
-        int len = NativeMethods.GetWindowTextLength(hWnd);
+        HWND h = (HWND)hWnd;
+        int len = PInvoke.GetWindowTextLength(h);
         if (len <= 0) return "";
-        var sb = new StringBuilder(len + 1);
-        NativeMethods.GetWindowText(hWnd, sb, sb.Capacity);
-        return sb.ToString();
+        Span<char> buffer = len < 512 ? stackalloc char[len + 1] : new char[len + 1];
+        int written;
+        fixed (char* p = buffer)
+        {
+            written = PInvoke.GetWindowText(h, new PWSTR(p), buffer.Length);
+        }
+        return new string(buffer[..written]);
     }
 
     private (string name, string exe) GetProcessInfo(IntPtr hWnd)

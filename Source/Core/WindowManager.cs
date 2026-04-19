@@ -102,7 +102,7 @@ internal sealed class WindowManager
         var (sw, sh) = _canvas.WorldToScreenSize(world.W, world.H);
 
         _pos.SetWindowPosition(hWnd, sx, sy, sw, sh,
-            NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
+            (uint)(SET_WINDOW_POS_FLAGS.SWP_NOZORDER | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE));
 
         _lastScreen[hWnd] = (sx, sy, sw, sh);
         return true;
@@ -124,7 +124,7 @@ internal sealed class WindowManager
             return;
 
         int style = _pos.GetWindowStyle(hWnd);
-        bool isMaximized = (style & (int)NativeMethods.WS_MAXIMIZE) != 0;
+        bool isMaximized = (style & (int)WINDOW_STYLE.WS_MAXIMIZE) != 0;
 
         // Keep canvas's maximize state in sync with Win32
         if (_canvas.HasWindow(hWnd))
@@ -259,7 +259,7 @@ internal sealed class WindowManager
         if (!_pos.IsWindowVisible(hWnd))
             return false;
         int style = _pos.GetWindowStyle(hWnd);
-        return (style & (int)NativeMethods.WS_MINIMIZE) == 0;
+        return (style & (int)WINDOW_STYLE.WS_MINIMIZE) == 0;
     }
 
     /// <summary>

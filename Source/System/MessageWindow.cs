@@ -32,15 +32,14 @@ internal sealed class MessageWindow : NativeWindow, IDisposable
         _onOverviewHotkey = onOverviewHotkey;
         _onCanvasInput = onCanvasInput;
 
-        NativeMethods.RegisterHotKey(Handle, HOTKEY_SEARCH,
-            NativeMethods.MOD_ALT | NativeMethods.MOD_NOREPEAT, VK_S);
-        NativeMethods.RegisterHotKey(Handle, HOTKEY_OVERVIEW,
-            NativeMethods.MOD_ALT | NativeMethods.MOD_NOREPEAT, VK_Q);
+        const HOT_KEY_MODIFIERS modifiers = HOT_KEY_MODIFIERS.MOD_ALT | HOT_KEY_MODIFIERS.MOD_NOREPEAT;
+        PInvoke.RegisterHotKey((HWND)Handle, HOTKEY_SEARCH, modifiers, VK_S);
+        PInvoke.RegisterHotKey((HWND)Handle, HOTKEY_OVERVIEW, modifiers, VK_Q);
     }
 
     protected override void WndProc(ref Message m)
     {
-        if (m.Msg == NativeMethods.WM_HOTKEY)
+        if (m.Msg == (int)PInvoke.WM_HOTKEY)
         {
             switch (m.WParam.ToInt32())
             {
@@ -64,8 +63,8 @@ internal sealed class MessageWindow : NativeWindow, IDisposable
 
     public void Dispose()
     {
-        NativeMethods.UnregisterHotKey(Handle, HOTKEY_SEARCH);
-        NativeMethods.UnregisterHotKey(Handle, HOTKEY_OVERVIEW);
+        PInvoke.UnregisterHotKey((HWND)Handle, HOTKEY_SEARCH);
+        PInvoke.UnregisterHotKey((HWND)Handle, HOTKEY_OVERVIEW);
         DestroyHandle();
     }
 }

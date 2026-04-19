@@ -16,76 +16,76 @@ internal sealed class WinEventRouter : IDisposable
     public event Action? AltTabStarted;
     public event Action? AltTabEnded;
 
-    private IntPtr _hookMinimize;
-    private IntPtr _hookForeground;
-    private IntPtr _hookSwitch;
-    private IntPtr _hookDestroy;
-    private IntPtr _hookLocationChange;
-    private readonly NativeMethods.WinEventDelegate _winEventProc;
+    private readonly UnhookWinEventSafeHandle _hookMinimize;
+    private readonly UnhookWinEventSafeHandle _hookForeground;
+    private readonly UnhookWinEventSafeHandle _hookSwitch;
+    private readonly UnhookWinEventSafeHandle _hookDestroy;
+    private readonly UnhookWinEventSafeHandle _hookLocationChange;
+    private readonly WINEVENTPROC _winEventProc;
 
     public WinEventRouter()
     {
         _winEventProc = OnWinEvent;
 
-        uint flags = NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS;
+        uint flags = PInvoke.WINEVENT_OUTOFCONTEXT | PInvoke.WINEVENT_SKIPOWNPROCESS;
 
-        _hookMinimize = NativeMethods.SetWinEventHook(
-            NativeMethods.EVENT_SYSTEM_MINIMIZESTART,
-            NativeMethods.EVENT_SYSTEM_MINIMIZEEND,
-            IntPtr.Zero, _winEventProc, 0, 0, flags);
+        _hookMinimize = PInvoke.SetWinEventHook(
+            PInvoke.EVENT_SYSTEM_MINIMIZESTART,
+            PInvoke.EVENT_SYSTEM_MINIMIZEEND,
+            null, _winEventProc, 0, 0, flags);
 
-        _hookForeground = NativeMethods.SetWinEventHook(
-            NativeMethods.EVENT_SYSTEM_FOREGROUND,
-            NativeMethods.EVENT_SYSTEM_FOREGROUND,
-            IntPtr.Zero, _winEventProc, 0, 0, flags);
+        _hookForeground = PInvoke.SetWinEventHook(
+            PInvoke.EVENT_SYSTEM_FOREGROUND,
+            PInvoke.EVENT_SYSTEM_FOREGROUND,
+            null, _winEventProc, 0, 0, flags);
 
-        _hookSwitch = NativeMethods.SetWinEventHook(
-            NativeMethods.EVENT_SYSTEM_SWITCHSTART,
-            NativeMethods.EVENT_SYSTEM_SWITCHEND,
-            IntPtr.Zero, _winEventProc, 0, 0, flags);
+        _hookSwitch = PInvoke.SetWinEventHook(
+            PInvoke.EVENT_SYSTEM_SWITCHSTART,
+            PInvoke.EVENT_SYSTEM_SWITCHEND,
+            null, _winEventProc, 0, 0, flags);
 
-        _hookDestroy = NativeMethods.SetWinEventHook(
-            NativeMethods.EVENT_OBJECT_DESTROY,
-            NativeMethods.EVENT_OBJECT_DESTROY,
-            IntPtr.Zero, _winEventProc, 0, 0, flags);
+        _hookDestroy = PInvoke.SetWinEventHook(
+            PInvoke.EVENT_OBJECT_DESTROY,
+            PInvoke.EVENT_OBJECT_DESTROY,
+            null, _winEventProc, 0, 0, flags);
 
-        _hookLocationChange = NativeMethods.SetWinEventHook(
-            NativeMethods.EVENT_OBJECT_LOCATIONCHANGE,
-            NativeMethods.EVENT_OBJECT_LOCATIONCHANGE,
-            IntPtr.Zero, _winEventProc, 0, 0, flags);
+        _hookLocationChange = PInvoke.SetWinEventHook(
+            PInvoke.EVENT_OBJECT_LOCATIONCHANGE,
+            PInvoke.EVENT_OBJECT_LOCATIONCHANGE,
+            null, _winEventProc, 0, 0, flags);
     }
 
-    private void OnWinEvent(IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
+    private void OnWinEvent(HWINEVENTHOOK hWinEventHook, uint eventType, HWND hwnd,
         int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
     {
         switch (eventType)
         {
-            case NativeMethods.EVENT_SYSTEM_MINIMIZESTART:
+            case PInvoke.EVENT_SYSTEM_MINIMIZESTART:
                 WindowMinimized?.Invoke(hwnd);
                 break;
 
-            case NativeMethods.EVENT_OBJECT_DESTROY:
+            case PInvoke.EVENT_OBJECT_DESTROY:
                 WindowDestroyed?.Invoke(hwnd);
                 break;
 
-            case NativeMethods.EVENT_SYSTEM_SWITCHSTART:
+            case PInvoke.EVENT_SYSTEM_SWITCHSTART:
                 AltTabStarted?.Invoke();
                 break;
 
-            case NativeMethods.EVENT_SYSTEM_SWITCHEND:
+            case PInvoke.EVENT_SYSTEM_SWITCHEND:
                 AltTabEnded?.Invoke();
                 break;
 
-            case NativeMethods.EVENT_SYSTEM_MINIMIZEEND:
+            case PInvoke.EVENT_SYSTEM_MINIMIZEEND:
                 WindowRestored?.Invoke(hwnd);
                 break;
 
-            case NativeMethods.EVENT_SYSTEM_FOREGROUND:
+            case PInvoke.EVENT_SYSTEM_FOREGROUND:
                 WindowFocused?.Invoke(hwnd);
                 break;
 
-            case NativeMethods.EVENT_OBJECT_LOCATIONCHANGE:
-                if (idObject == NativeMethods.OBJID_WINDOW)
+            case PInvoke.EVENT_OBJECT_LOCATIONCHANGE:
+                if (idObject == (int)OBJECT_IDENTIFIER.OBJID_WINDOW)
                     WindowMoved?.Invoke(hwnd);
                 break;
         }
@@ -93,15 +93,10 @@ internal sealed class WinEventRouter : IDisposable
 
     public void Dispose()
     {
-        if (_hookMinimize != IntPtr.Zero)
-        { NativeMethods.UnhookWinEvent(_hookMinimize); _hookMinimize = IntPtr.Zero; }
-        if (_hookForeground != IntPtr.Zero)
-        { NativeMethods.UnhookWinEvent(_hookForeground); _hookForeground = IntPtr.Zero; }
-        if (_hookSwitch != IntPtr.Zero)
-        { NativeMethods.UnhookWinEvent(_hookSwitch); _hookSwitch = IntPtr.Zero; }
-        if (_hookDestroy != IntPtr.Zero)
-        { NativeMethods.UnhookWinEvent(_hookDestroy); _hookDestroy = IntPtr.Zero; }
-        if (_hookLocationChange != IntPtr.Zero)
-        { NativeMethods.UnhookWinEvent(_hookLocationChange); _hookLocationChange = IntPtr.Zero; }
+        _hookMinimize.Dispose();
+        _hookForeground.Dispose();
+        _hookSwitch.Dispose();
+        _hookDestroy.Dispose();
+        _hookLocationChange.Dispose();
     }
 }

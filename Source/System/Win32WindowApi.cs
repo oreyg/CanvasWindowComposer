@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
 using System.Windows.Forms;
 
 namespace CanvasDesktop;
@@ -20,124 +19,152 @@ internal sealed class Win32WindowApi : IWindowApi
         "Windows.UI.Core.CoreWindow"
     };
 
-    public bool IsWindowVisible(IntPtr hWnd) =>
-        NativeMethods.IsWindowVisible(hWnd);
+    public bool IsWindowVisible(IntPtr hWnd)
+    {
+        return PInvoke.IsWindowVisible((HWND)hWnd);
+    }
 
-    public int GetWindowStyle(IntPtr hWnd) =>
-        NativeMethods.GetWindowLong(hWnd, NativeMethods.GWL_STYLE);
+    public int GetWindowStyle(IntPtr hWnd)
+    {
+        return PInvoke.GetWindowLong((HWND)hWnd, WINDOW_LONG_PTR_INDEX.GWL_STYLE);
+    }
 
     public (int x, int y, int w, int h) GetWindowRect(IntPtr hWnd)
     {
-        NativeMethods.GetWindowRect(hWnd, out var rect);
-        return (rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
+        PInvoke.GetWindowRect((HWND)hWnd, out RECT rect);
+        return (rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
     }
 
-    public (int left, int top, int right, int bottom) GetFrameInset(IntPtr hWnd)
+    public unsafe (int left, int top, int right, int bottom) GetFrameInset(IntPtr hWnd)
     {
-        NativeMethods.GetWindowRect(hWnd, out var full);
-        int hr = NativeMethods.DwmGetWindowAttribute(hWnd,
-            NativeMethods.DWMWA_EXTENDED_FRAME_BOUNDS,
-            out NativeMethods.RECT visual,
-            System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.RECT>());
+        PInvoke.GetWindowRect((HWND)hWnd, out RECT full);
+        RECT visual;
+        HRESULT hr = PInvoke.DwmGetWindowAttribute((HWND)hWnd,
+            DWMWINDOWATTRIBUTE.DWMWA_EXTENDED_FRAME_BOUNDS,
+            &visual,
+            (uint)sizeof(RECT));
 
-        if (hr != 0)
+        if (hr.Failed)
             return (0, 0, 0, 0);
 
         return (
-            Math.Max(0, visual.Left - full.Left),
-            Math.Max(0, visual.Top - full.Top),
-            Math.Max(0, full.Right - visual.Right),
-            Math.Max(0, full.Bottom - visual.Bottom)
+            Math.Max(0, visual.left - full.left),
+            Math.Max(0, visual.top - full.top),
+            Math.Max(0, full.right - visual.right),
+            Math.Max(0, full.bottom - visual.bottom)
         );
     }
 
-    public uint GetWindowProcessId(IntPtr hWnd)
+    public unsafe uint GetWindowProcessId(IntPtr hWnd)
     {
-        NativeMethods.GetWindowThreadProcessId(hWnd, out uint pid);
+        uint pid;
+        _ = PInvoke.GetWindowThreadProcessId((HWND)hWnd, &pid);
         return pid;
     }
 
-    public bool IsManageable(IntPtr hWnd, uint ownPid, bool allowMinimized = false)
+    public unsafe bool IsManageable(IntPtr hWnd, uint ownPid, bool allowMinimized = false)
     {
-        if (!NativeMethods.IsWindowVisible(hWnd))
+        HWND h = (HWND)hWnd;
+        if (!PInvoke.IsWindowVisible(h))
             return false;
 
-        NativeMethods.GetWindowThreadProcessId(hWnd, out uint pid);
+        uint pid;
+        _ = PInvoke.GetWindowThreadProcessId(h, &pid);
         if (pid == ownPid)
             return false;
 
-        int style = NativeMethods.GetWindowLong(hWnd, NativeMethods.GWL_STYLE);
-        int exStyle = NativeMethods.GetWindowLong(hWnd, NativeMethods.GWL_EXSTYLE);
+        int style = PInvoke.GetWindowLong(h, WINDOW_LONG_PTR_INDEX.GWL_STYLE);
+        int exStyle = PInvoke.GetWindowLong(h, WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE);
 
-        if ((style & (int)NativeMethods.WS_MAXIMIZE) != 0)
+        if ((style & (int)WINDOW_STYLE.WS_MAXIMIZE) != 0)
             return false;
-        if (!allowMinimized && (style & (int)NativeMethods.WS_MINIMIZE) != 0)
-            return false;
-
-        if ((exStyle & (int)NativeMethods.WS_EX_TOOLWINDOW) != 0 &&
-            (exStyle & (int)NativeMethods.WS_EX_APPWINDOW) == 0)
+        if (!allowMinimized && (style & (int)WINDOW_STYLE.WS_MINIMIZE) != 0)
             return false;
 
-        if (NativeMethods.GetParent(hWnd) != IntPtr.Zero)
+        if ((exStyle & (int)WINDOW_EX_STYLE.WS_EX_TOOLWINDOW) != 0 &&
+            (exStyle & (int)WINDOW_EX_STYLE.WS_EX_APPWINDOW) == 0)
             return false;
 
-        if (NativeMethods.DwmGetWindowAttribute(hWnd, NativeMethods.DWMWA_CLOAKED,
-                out int cloaked, sizeof(int)) == 0 && cloaked != 0)
+        if (PInvoke.GetParent(h) != HWND.Null)
             return false;
 
-        var className = new StringBuilder(256);
-        NativeMethods.GetClassName(hWnd, className, 256);
-        if (ExcludedClasses.Contains(className.ToString()))
+        int cloaked;
+        HRESULT cloakedHr = PInvoke.DwmGetWindowAttribute(h, DWMWINDOWATTRIBUTE.DWMWA_CLOAKED,
+            &cloaked, sizeof(int));
+        if (cloakedHr.Succeeded && cloaked != 0)
+            return false;
+
+        Span<char> classBuf = stackalloc char[256];
+        int classLen;
+        fixed (char* p = classBuf)
+        {
+            classLen = PInvoke.GetClassName(h, new PWSTR((char*)p), classBuf.Length);
+        }
+        if (classLen == 0)
+            return false;
+        string className = new string(classBuf[..classLen]);
+        if (ExcludedClasses.Contains(className))
             return false;
 
         return true;
     }
 
-    public void SetWindowPosition(IntPtr hWnd, int x, int y, int w, int h, uint flags) =>
-        NativeMethods.SetWindowPos(hWnd, IntPtr.Zero, x, y, w, h, flags);
+    public void SetWindowPosition(IntPtr hWnd, int x, int y, int w, int h, uint flags)
+    {
+        PInvoke.SetWindowPos((HWND)hWnd, HWND.Null, x, y, w, h, (SET_WINDOW_POS_FLAGS)flags);
+    }
 
-    public void ClipWindow(IntPtr hWnd) =>
-        NativeMethods.SetWindowRgn(hWnd, NativeMethods.CreateRectRgn(0, 0, 0, 0), true);
+    public void ClipWindow(IntPtr hWnd)
+    {
+        HRGN rgn = PInvoke.CreateRectRgn(0, 0, 0, 0);
+        _ = PInvoke.SetWindowRgn((HWND)hWnd, rgn, true);
+    }
 
-    public void UnclipWindow(IntPtr hWnd) =>
-        NativeMethods.SetWindowRgn(hWnd, IntPtr.Zero, true);
+    public void UnclipWindow(IntPtr hWnd)
+    {
+        _ = PInvoke.SetWindowRgn((HWND)hWnd, (HRGN)IntPtr.Zero, true);
+    }
 
     public void BatchMove(List<(IntPtr hWnd, int x, int y, int w, int h, bool posOnly)> items, bool allowAsync)
     {
         if (items.Count == 0)
             return;
 
-        IntPtr hdwp = NativeMethods.BeginDeferWindowPos(items.Count);
-        bool useBatch = hdwp != IntPtr.Zero;
+        HDWP hdwp = PInvoke.BeginDeferWindowPos(items.Count);
+        bool useBatch = hdwp != default(HDWP);
 
         foreach (var (hWnd, x, y, w, h, posOnly) in items)
         {
-            uint flags = NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE;
-            if (posOnly) flags |= NativeMethods.SWP_NOSIZE;
-            if (allowAsync) flags |= NativeMethods.SWP_ASYNCWINDOWPOS | NativeMethods.SWP_NOSENDCHANGING | NativeMethods.SWP_NOREDRAW;
+            SET_WINDOW_POS_FLAGS flags = SET_WINDOW_POS_FLAGS.SWP_NOZORDER | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE;
+            if (posOnly) flags |= SET_WINDOW_POS_FLAGS.SWP_NOSIZE;
+            if (allowAsync) flags |= SET_WINDOW_POS_FLAGS.SWP_NOSENDCHANGING | SET_WINDOW_POS_FLAGS.SWP_ASYNCWINDOWPOS;
 
+            HWND target = (HWND)hWnd;
             if (useBatch)
             {
-                hdwp = NativeMethods.DeferWindowPos(hdwp, hWnd, IntPtr.Zero,
-                    x, y, w, h, flags);
-                if (hdwp == IntPtr.Zero)
+                hdwp = PInvoke.DeferWindowPos(hdwp, target, HWND.Null, x, y, w, h, flags);
+                if (hdwp == default(HDWP))
                 {
                     useBatch = false;
-                    NativeMethods.SetWindowPos(hWnd, IntPtr.Zero, x, y, w, h, flags);
+                    PInvoke.SetWindowPos(target, HWND.Null, x, y, w, h, flags);
                 }
             }
             else
             {
-                NativeMethods.SetWindowPos(hWnd, IntPtr.Zero, x, y, w, h, flags);
+                PInvoke.SetWindowPos(target, HWND.Null, x, y, w, h, flags);
             }
         }
 
-        if (useBatch && hdwp != IntPtr.Zero)
-            NativeMethods.EndDeferWindowPos(hdwp);
+        if (useBatch && hdwp != default(HDWP))
+            PInvoke.EndDeferWindowPos(hdwp);
     }
 
-    public void EnumWindows(Func<IntPtr, bool> callback) =>
-        NativeMethods.EnumWindows((hWnd, _) => callback(hWnd), IntPtr.Zero);
+    public unsafe void EnumWindows(Func<IntPtr, bool> callback)
+    {
+        WNDENUMPROC proc = (HWND hWnd, LPARAM _) => callback(hWnd);
+        PInvoke.EnumWindows(proc, 0);
+        GC.KeepAlive(proc);
+    }
 
     public IReadOnlyList<(int x, int y, int w, int h)> GetScreenWorkingAreas()
     {

@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
-using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace CanvasDesktop;
@@ -62,9 +61,6 @@ internal sealed class SearchOverlay : Form
     private readonly int _padding;
     private readonly int _itemHeight;
     private readonly int _cornerRadius;
-
-    [DllImport("gdi32.dll")]
-    private static extern IntPtr CreateRoundRectRgn(int x1, int y1, int x2, int y2, int cx, int cy);
 
     public SearchOverlay(Canvas canvas, WindowManager wm, IWindowApi positioner)
     {
@@ -143,7 +139,8 @@ internal sealed class SearchOverlay : Form
 
     private void ApplyRoundedRegion()
     {
-        Region = Region.FromHrgn(CreateRoundRectRgn(0, 0, Width, Height, _cornerRadius, _cornerRadius));
+        HRGN rgn = PInvoke.CreateRoundRectRgn(0, 0, Width, Height, _cornerRadius, _cornerRadius);
+        Region = Region.FromHrgn(rgn);
     }
 
     protected override void OnResize(EventArgs e)
@@ -270,13 +267,14 @@ internal sealed class SearchOverlay : Form
         var result = _results[idx];
         var hWnd = result.HWnd;
         var world = result.World;
+        HWND h = (HWND)hWnd;
 
         // Restore if minimized or hidden
-        int style = NativeMethods.GetWindowLong(hWnd, NativeMethods.GWL_STYLE);
-        if ((style & (int)NativeMethods.WS_MINIMIZE) != 0)
-            NativeMethods.ShowWindow(hWnd, NativeMethods.SW_RESTORE);
-        else if (!NativeMethods.IsWindowVisible(hWnd))
-            NativeMethods.ShowWindow(hWnd, NativeMethods.SW_SHOW);
+        int style = PInvoke.GetWindowLong(h, WINDOW_LONG_PTR_INDEX.GWL_STYLE);
+        if ((style & (int)WINDOW_STYLE.WS_MINIMIZE) != 0)
+            PInvoke.ShowWindow(h, SHOW_WINDOW_CMD.SW_RESTORE);
+        else if (!PInvoke.IsWindowVisible(h))
+            PInvoke.ShowWindow(h, SHOW_WINDOW_CMD.SW_SHOW);
 
         // Register into canvas if not already tracked
         if (!_canvas.HasWindow(hWnd))
@@ -286,7 +284,7 @@ internal sealed class SearchOverlay : Form
         if (_canvas.Windows.TryGetValue(hWnd, out var current))
             world = current;
 
-        NativeMethods.SetForegroundWindow(hWnd);
+        PInvoke.SetForegroundWindow(h);
 
         var screen = Screen.PrimaryScreen!.WorkingArea;
         _canvas.CenterOn(world.X, world.Y, world.W, world.H, screen.Width, screen.Height);

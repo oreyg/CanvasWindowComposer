@@ -48,7 +48,8 @@ internal sealed class OverviewManager : IDisposable
     public Mode CurrentMode { get; private set; } = Mode.Hidden;
     private ModeConfig _cfg = HiddenCfg;
 
-    public event Action<Mode, Mode>? ModeChanged;
+    public event Action<Mode, Mode>? BeforeModeChanged;
+    public event Action<Mode, Mode>? AfterModeChanged;
 
     // Camera (world coords). Same semantics as before: world origin maps to
     // virtual-screen (0,0) when _camX == _camY == 0 at zoom 1.
@@ -259,6 +260,8 @@ internal sealed class OverviewManager : IDisposable
         _cfg = cfg;
         CurrentMode = target;
 
+        BeforeModeChanged?.Invoke(from, target);
+
         if (target == Mode.Hidden)
             HideInternal(syncCamera: syncCameraOnClose && from != Mode.Hidden);
         else if (from == Mode.Hidden)
@@ -266,7 +269,7 @@ internal sealed class OverviewManager : IDisposable
         else
             ApplyConfig();
 
-        ModeChanged?.Invoke(from, target);
+        AfterModeChanged?.Invoke(from, target);
     }
 
     private void ShowInternal()
@@ -367,15 +370,15 @@ internal sealed class OverviewManager : IDisposable
         IntPtr desktopWnd = FindDesktopWallpaperWindow();
         if (desktopWnd == IntPtr.Zero) return;
 
-        int hr = NativeMethods.DwmRegisterThumbnail(pass.Handle, desktopWnd, out IntPtr thumb);
-        pass.DesktopThumb = hr == 0 ? thumb : IntPtr.Zero;
+        HRESULT hr = PInvoke.DwmRegisterThumbnail((HWND)pass.Handle, (HWND)desktopWnd, out nint thumb);
+        pass.DesktopThumb = hr.Succeeded ? thumb : IntPtr.Zero;
     }
 
     private void UnregisterDesktopThumbnail(OverviewOverlay pass)
     {
         if (pass.DesktopThumb != IntPtr.Zero)
         {
-            NativeMethods.DwmUnregisterThumbnail(pass.DesktopThumb);
+            PInvoke.DwmUnregisterThumbnail(pass.DesktopThumb);
             pass.DesktopThumb = IntPtr.Zero;
         }
     }
@@ -398,50 +401,56 @@ internal sealed class OverviewManager : IDisposable
         // slice of it over this form's client area by setting a source rect.
         var b = pass.Screen.Bounds;
         var vs = SystemInformation.VirtualScreen;
-        var props = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
+        var props = new DWM_THUMBNAIL_PROPERTIES
         {
-            dwFlags = NativeMethods.DWM_TNP_RECTDESTINATION | NativeMethods.DWM_TNP_RECTSOURCE |
-                      NativeMethods.DWM_TNP_VISIBLE | NativeMethods.DWM_TNP_OPACITY,
-            rcDestination = new NativeMethods.RECT { Left = 0, Top = 0, Right = b.Width, Bottom = b.Height },
-            rcSource = new NativeMethods.RECT
+            dwFlags = PInvoke.DWM_TNP_RECTDESTINATION | PInvoke.DWM_TNP_RECTSOURCE |
+                      PInvoke.DWM_TNP_VISIBLE | PInvoke.DWM_TNP_OPACITY,
+            rcDestination = new RECT { left = 0, top = 0, right = b.Width, bottom = b.Height },
+            rcSource = new RECT
             {
-                Left   = b.X - vs.X,
-                Top    = b.Y - vs.Y,
-                Right  = b.X - vs.X + b.Width,
-                Bottom = b.Y - vs.Y + b.Height
+                left   = b.X - vs.X,
+                top    = b.Y - vs.Y,
+                right  = b.X - vs.X + b.Width,
+                bottom = b.Y - vs.Y + b.Height
             },
             fVisible = true,
             opacity = opacity
         };
 
-        NativeMethods.DwmUpdateThumbnailProperties(pass.DesktopThumb, ref props);
+        PInvoke.DwmUpdateThumbnailProperties(pass.DesktopThumb, props);
     }
 
-    private void RegisterTaskbarThumbnails(OverviewOverlay pass)
+    private unsafe void RegisterTaskbarThumbnails(OverviewOverlay pass)
     {
-        IntPtr primary = NativeMethods.FindWindow("Shell_TrayWnd", null);
-        if (primary != IntPtr.Zero) AddTaskbar(pass, primary);
+        HWND primary = PInvoke.FindWindow("Shell_TrayWnd", null);
+        if (primary != HWND.Null) AddTaskbar(pass, primary);
 
-        NativeMethods.EnumWindows((hWnd, _) =>
+        WNDENUMPROC proc = (HWND hWnd, LPARAM _) =>
         {
-            var cls = new System.Text.StringBuilder(64);
-            NativeMethods.GetClassName(hWnd, cls, cls.Capacity);
-            if (cls.ToString() == "Shell_SecondaryTrayWnd")
+            Span<char> buf = stackalloc char[64];
+            int len;
+            fixed (char* p = buf)
+            {
+                len = PInvoke.GetClassName(hWnd, new PWSTR(p), buf.Length);
+            }
+            if (len > 0 && new string(buf[..len]) == "Shell_SecondaryTrayWnd")
                 AddTaskbar(pass, hWnd);
             return true;
-        }, IntPtr.Zero);
+        };
+        PInvoke.EnumWindows(proc, 0);
+        GC.KeepAlive(proc);
     }
 
-    private static void AddTaskbar(OverviewOverlay pass, IntPtr hwnd)
+    private static void AddTaskbar(OverviewOverlay pass, HWND hwnd)
     {
-        int hr = NativeMethods.DwmRegisterThumbnail(pass.Handle, hwnd, out IntPtr thumb);
-        if (hr == 0) pass.Taskbars.Add((hwnd, thumb));
+        HRESULT hr = PInvoke.DwmRegisterThumbnail((HWND)pass.Handle, hwnd, out nint thumb);
+        if (hr.Succeeded) pass.Taskbars.Add((hwnd, thumb));
     }
 
     private void UnregisterTaskbarThumbnails(OverviewOverlay pass)
     {
         foreach (var (_, thumb) in pass.Taskbars)
-            NativeMethods.DwmUnregisterThumbnail(thumb);
+            PInvoke.DwmUnregisterThumbnail(thumb);
         pass.Taskbars.Clear();
     }
 
@@ -451,33 +460,33 @@ internal sealed class OverviewManager : IDisposable
 
         if (!_cfg.TaskbarVisible)
         {
-            var hideProps = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
+            var hideProps = new DWM_THUMBNAIL_PROPERTIES
             {
-                dwFlags = NativeMethods.DWM_TNP_VISIBLE,
+                dwFlags = PInvoke.DWM_TNP_VISIBLE,
                 fVisible = false
             };
             foreach (var (_, thumb) in pass.Taskbars)
-                NativeMethods.DwmUpdateThumbnailProperties(thumb, ref hideProps);
+                PInvoke.DwmUpdateThumbnailProperties(thumb, hideProps);
             return;
         }
 
         foreach (var (hwnd, thumb) in pass.Taskbars)
         {
-            NativeMethods.GetWindowRect(hwnd, out var r);
-            var props = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
+            PInvoke.GetWindowRect((HWND)hwnd, out RECT r);
+            var props = new DWM_THUMBNAIL_PROPERTIES
             {
-                dwFlags = NativeMethods.DWM_TNP_RECTDESTINATION | NativeMethods.DWM_TNP_VISIBLE | NativeMethods.DWM_TNP_OPACITY,
-                rcDestination = new NativeMethods.RECT
+                dwFlags = PInvoke.DWM_TNP_RECTDESTINATION | PInvoke.DWM_TNP_VISIBLE | PInvoke.DWM_TNP_OPACITY,
+                rcDestination = new RECT
                 {
-                    Left   = r.Left   - pass.OriginX,
-                    Top    = r.Top    - pass.OriginY,
-                    Right  = r.Right  - pass.OriginX,
-                    Bottom = r.Bottom - pass.OriginY
+                    left   = r.left   - pass.OriginX,
+                    top    = r.top    - pass.OriginY,
+                    right  = r.right  - pass.OriginX,
+                    bottom = r.bottom - pass.OriginY
                 },
                 fVisible = true,
                 opacity = 255
             };
-            NativeMethods.DwmUpdateThumbnailProperties(thumb, ref props);
+            PInvoke.DwmUpdateThumbnailProperties(thumb, props);
         }
     }
 
@@ -488,8 +497,8 @@ internal sealed class OverviewManager : IDisposable
         for (int i = _visibleWindows.Count - 1; i >= 0; i--)
         {
             var (hWnd, world) = _visibleWindows[i];
-            int hr = NativeMethods.DwmRegisterThumbnail(pass.Handle, hWnd, out IntPtr thumb);
-            if (hr == 0) pass.Thumbnails.Add((hWnd, thumb, world));
+            HRESULT hr = PInvoke.DwmRegisterThumbnail((HWND)pass.Handle, (HWND)hWnd, out nint thumb);
+            if (hr.Succeeded) pass.Thumbnails.Add((hWnd, thumb, world));
         }
     }
 
@@ -508,8 +517,8 @@ internal sealed class OverviewManager : IDisposable
         _visibleWindows.Insert(0, entry);
 
         // System z-order — HWND_TOP (0), no move/size/activate
-        NativeMethods.SetWindowPos(hWnd, IntPtr.Zero, 0, 0, 0, 0,
-            NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE);
+        PInvoke.SetWindowPos((HWND)hWnd, HWND.Null, 0, 0, 0, 0,
+            SET_WINDOW_POS_FLAGS.SWP_NOMOVE | SET_WINDOW_POS_FLAGS.SWP_NOSIZE | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE);
 
         // Re-register the window's thumbnail on every pass so it draws last (on top).
         foreach (var pass in _passes)
@@ -522,7 +531,7 @@ internal sealed class OverviewManager : IDisposable
                 {
                     idx = i;
                     world = pass.Thumbnails[i].world;
-                    NativeMethods.DwmUnregisterThumbnail(pass.Thumbnails[i].thumb);
+                    PInvoke.DwmUnregisterThumbnail(pass.Thumbnails[i].thumb);
                     break;
                 }
             }
@@ -530,8 +539,8 @@ internal sealed class OverviewManager : IDisposable
 
             pass.Thumbnails.RemoveAt(idx);
 
-            int hr = NativeMethods.DwmRegisterThumbnail(pass.Handle, hWnd, out IntPtr newThumb);
-            if (hr == 0)
+            HRESULT hr = PInvoke.DwmRegisterThumbnail((HWND)pass.Handle, (HWND)hWnd, out nint newThumb);
+            if (hr.Succeeded)
                 pass.Thumbnails.Add((hWnd, newThumb, world));
         }
 
@@ -541,7 +550,7 @@ internal sealed class OverviewManager : IDisposable
     private void UnregisterWindowThumbnails(OverviewOverlay pass)
     {
         foreach (var (_, thumb, _) in pass.Thumbnails)
-            NativeMethods.DwmUnregisterThumbnail(thumb);
+            PInvoke.DwmUnregisterThumbnail(thumb);
         pass.Thumbnails.Clear();
     }
 
@@ -575,14 +584,14 @@ internal sealed class OverviewManager : IDisposable
             int right  = sx + sw - fR - pass.OriginX;
             int bottom = sy + sh - fB - pass.OriginY;
 
-            var props = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
+            var props = new DWM_THUMBNAIL_PROPERTIES
             {
-                dwFlags = NativeMethods.DWM_TNP_RECTDESTINATION | NativeMethods.DWM_TNP_VISIBLE | NativeMethods.DWM_TNP_OPACITY,
-                rcDestination = new NativeMethods.RECT { Left = left, Top = top, Right = right, Bottom = bottom },
+                dwFlags = PInvoke.DWM_TNP_RECTDESTINATION | PInvoke.DWM_TNP_VISIBLE | PInvoke.DWM_TNP_OPACITY,
+                rcDestination = new RECT { left = left, top = top, right = right, bottom = bottom },
                 fVisible = true,
                 opacity = 255
             };
-            NativeMethods.DwmUpdateThumbnailProperties(thumb, ref props);
+            PInvoke.DwmUpdateThumbnailProperties(thumb, props);
         }
     }
 
@@ -796,13 +805,12 @@ internal sealed class OverviewManager : IDisposable
 
     private void GoToWindow(IntPtr hWnd, WorldRect world)
     {
-        int style = NativeMethods.GetWindowLong(hWnd, NativeMethods.GWL_STYLE);
-        if ((style & (int)NativeMethods.WS_MINIMIZE) != 0)
-            NativeMethods.ShowWindow(hWnd, NativeMethods.SW_RESTORE);
+        if (_mainCanvas.IsCollapsed(hWnd))
+            PInvoke.ShowWindow((HWND)hWnd, SHOW_WINDOW_CMD.SW_RESTORE);
 
         var vs = SystemInformation.VirtualScreen;
         _mainCanvas.CenterOn(world.X, world.Y, world.W, world.H, vs.Width, vs.Height);
-        NativeMethods.SetForegroundWindow(hWnd);
+        PInvoke.SetForegroundWindow((HWND)hWnd);
         TransitionTo(Mode.Hidden, syncCameraOnClose: false);
     }
 
@@ -823,20 +831,22 @@ internal sealed class OverviewManager : IDisposable
     /// <summary>Find the window that renders the desktop wallpaper.</summary>
     private static IntPtr FindDesktopWallpaperWindow()
     {
-        IntPtr progman = NativeMethods.FindWindow("Progman", null);
-        if (progman == IntPtr.Zero) return IntPtr.Zero;
+        HWND progman = PInvoke.FindWindow("Progman", null);
+        if (progman == HWND.Null) return IntPtr.Zero;
 
-        NativeMethods.SendMessage(progman, 0x052C, IntPtr.Zero, IntPtr.Zero);
+        PInvoke.SendMessage(progman, 0x052C, 0, 0);
 
-        IntPtr workerW = IntPtr.Zero;
-        NativeMethods.EnumWindows((hWnd, _) =>
+        HWND workerW = HWND.Null;
+        WNDENUMPROC proc = (HWND hWnd, LPARAM _) =>
         {
-            IntPtr shell = NativeMethods.FindWindowEx(hWnd, IntPtr.Zero, "SHELLDLL_DefView", null);
-            if (shell != IntPtr.Zero)
-                workerW = NativeMethods.FindWindowEx(IntPtr.Zero, hWnd, "WorkerW", null);
+            HWND shell = PInvoke.FindWindowEx(hWnd, HWND.Null, "SHELLDLL_DefView", null);
+            if (shell != HWND.Null)
+                workerW = PInvoke.FindWindowEx(HWND.Null, hWnd, "WorkerW", null);
             return true;
-        }, IntPtr.Zero);
+        };
+        PInvoke.EnumWindows(proc, 0);
+        GC.KeepAlive(proc);
 
-        return workerW != IntPtr.Zero ? workerW : progman;
+        return workerW != HWND.Null ? workerW : progman;
     }
 }

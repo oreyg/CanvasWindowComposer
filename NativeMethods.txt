@@ -1,0 +1,132 @@
+// Mouse hook
+SetWindowsHookEx
+UnhookWindowsHookEx
+CallNextHookEx
+WH_MOUSE_LL
+WM_LBUTTONDOWN
+WM_RBUTTONDOWN
+WM_MBUTTONDOWN
+WM_MBUTTONUP
+WM_MOUSEMOVE
+WM_MOUSEWHEEL
+MSLLHOOKSTRUCT
+
+// Module
+GetModuleHandle
+
+// Messages
+PostMessage
+SendMessage
+WM_HOTKEY
+WM_DPICHANGED
+
+// Window enumeration & properties
+EnumWindows
+IsWindowVisible
+GetWindowLong
+SetWindowLong
+GetWindowRect
+SetWindowPos
+ShowWindow
+GetShellWindow
+GetDesktopWindow
+FindWindow
+FindWindowEx
+WindowFromPoint
+SetForegroundWindow
+GetParent
+GetAncestor
+GetWindowThreadProcessId
+GetClassName
+GetWindowText
+GetWindowTextLength
+GWL_STYLE
+GWL_EXSTYLE
+WS_MAXIMIZE
+WS_MINIMIZE
+WS_VISIBLE
+WS_EX_TOOLWINDOW
+WS_EX_APPWINDOW
+WS_EX_TRANSPARENT
+WS_EX_LAYERED
+WS_EX_NOACTIVATE
+SW_HIDE
+SW_SHOW
+SW_MINIMIZE
+SW_RESTORE
+SWP_FRAMECHANGED
+SWP_ASYNCWINDOWPOS
+SWP_NOACTIVATE
+SWP_NOMOVE
+SWP_NOREDRAW
+SWP_NOSENDCHANGING
+SWP_NOSIZE
+SWP_NOZORDER
+GA_ROOT
+
+// Layered window attributes
+SetLayeredWindowAttributes
+LWA_COLORKEY
+LWA_ALPHA
+
+// Regions
+SetWindowRgn
+CreateRectRgn
+CreateRoundRectRgn
+
+// Deferred window positioning
+BeginDeferWindowPos
+DeferWindowPos
+EndDeferWindowPos
+
+// DPI
+GetDpiForWindow
+GetWindowDpiAwarenessContext
+GetAwarenessFromDpiAwarenessContext
+
+// DWM
+DwmFlush
+DwmGetWindowAttribute
+DwmRegisterThumbnail
+DwmUnregisterThumbnail
+DwmUpdateThumbnailProperties
+DWM_THUMBNAIL_PROPERTIES
+DWMWA_EXTENDED_FRAME_BOUNDS
+DWMWA_CLOAKED
+DWM_TNP_RECTDESTINATION
+DWM_TNP_RECTSOURCE
+DWM_TNP_OPACITY
+DWM_TNP_VISIBLE
+
+// WinEvent hooks
+SetWinEventHook
+UnhookWinEvent
+EVENT_SYSTEM_FOREGROUND
+EVENT_SYSTEM_SWITCHSTART
+EVENT_SYSTEM_SWITCHEND
+EVENT_SYSTEM_MINIMIZESTART
+EVENT_SYSTEM_MINIMIZEEND
+EVENT_OBJECT_DESTROY
+EVENT_OBJECT_LOCATIONCHANGE
+EVENT_OBJECT_SHOW
+WINEVENT_OUTOFCONTEXT
+WINEVENT_SKIPOWNPROCESS
+OBJID_WINDOW
+
+// Repaint
+RedrawWindow
+RDW_INVALIDATE
+RDW_UPDATENOW
+RDW_ALLCHILDREN
+
+// Keyboard
+GetKeyState
+VK_SHIFT
+VK_CONTROL
+VK_MENU
+
+// Global hotkeys
+RegisterHotKey
+UnregisterHotKey
+MOD_ALT
+MOD_NOREPEAT

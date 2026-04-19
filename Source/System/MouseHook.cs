@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Drawing;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Threading;
 
 namespace CanvasDesktop;
@@ -16,11 +16,11 @@ internal sealed class MouseHook : IDisposable
 {
     private const int KeyStateDownBit = 0x8000;
 
-    private IntPtr _hookId = IntPtr.Zero;
-    private readonly NativeMethods.LowLevelMouseProc _proc;
+    private UnhookWindowsHookExSafeHandle? _hook;
+    private readonly HOOKPROC _proc;
     private bool _dragging;
-    private bool _altDrag; // true when drag was initiated with Alt (consume all input)
-    private NativeMethods.POINT _lastPoint;
+    private bool _altDrag;
+    private Point _lastPoint;
 
     // Extra HWNDs treated as valid pan-initiation surfaces (e.g., overview in pan mode).
     // Mutated on the UI thread; read from the hook thread — use HashSet + volatile swap.
@@ -34,37 +34,30 @@ internal sealed class MouseHook : IDisposable
         _extraPanSurfaces = new HashSet<IntPtr>();
     }
 
-    // Accumulated drag delta (written by hook, read by message handler)
     private int _pendingDx;
     private int _pendingDy;
     private volatile bool _hasPending;
     private volatile bool _dragJustEnded;
 
-    // Target window to post input notifications to
-    private IntPtr _notifyHwnd;
-    // Uses MessageWindow.WM_CANVAS_INPUT
+    private HWND _notifyHwnd;
 
-    // Alt+scroll triggers zoom (overview map)
     private volatile bool _zoomPending;
 
     public bool Enabled { get; set; } = true;
 
-    /// <summary>Set the window handle that receives WM_CANVAS_INPUT when input arrives.</summary>
-    public void SetNotifyTarget(IntPtr hwnd) => _notifyHwnd = hwnd;
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+    public void SetNotifyTarget(IntPtr hwnd)
+    {
+        _notifyHwnd = (HWND)hwnd;
+    }
 
     private void NotifyInput()
     {
-        if (_notifyHwnd != IntPtr.Zero)
-            PostMessage(_notifyHwnd, (uint)MessageWindow.WM_CANVAS_INPUT, IntPtr.Zero, IntPtr.Zero);
+        if (_notifyHwnd != HWND.Null)
+            PInvoke.PostMessage(_notifyHwnd, (uint)MessageWindow.WM_CANVAS_INPUT, 0, 0);
     }
 
-    /// <summary>Called once when middle-click drag starts on the desktop.</summary>
     public event Action? DragStarted;
 
-    /// <summary>Fires for any mouse button down that did NOT start a pan drag.</summary>
     public event Action? ButtonDown;
 
     public MouseHook()
@@ -76,19 +69,16 @@ internal sealed class MouseHook : IDisposable
     {
         using var curProcess = Process.GetCurrentProcess();
         using var curModule = curProcess.MainModule!;
-        _hookId = NativeMethods.SetWindowsHookEx(
-            NativeMethods.WH_MOUSE_LL,
+        _hook = PInvoke.SetWindowsHookEx(
+            WINDOWS_HOOK_ID.WH_MOUSE_LL,
             _proc,
-            NativeMethods.GetModuleHandle(curModule.ModuleName),
+            PInvoke.GetModuleHandle(curModule.ModuleName),
             0);
 
-        if (_hookId == IntPtr.Zero)
+        if (_hook.IsInvalid)
             throw new InvalidOperationException("Failed to install mouse hook.");
     }
 
-    /// <summary>
-    /// Drain accumulated drag delta (called by UI-thread timer).
-    /// </summary>
     public bool TryDrainDelta(out int dx, out int dy)
     {
         if (!_hasPending)
@@ -103,7 +93,6 @@ internal sealed class MouseHook : IDisposable
         return dx != 0 || dy != 0;
     }
 
-    /// <summary>Check and clear the drag-ended flag.</summary>
     public bool TryDrainDragEnded()
     {
         if (!_dragJustEnded) return false;
@@ -111,7 +100,6 @@ internal sealed class MouseHook : IDisposable
         return true;
     }
 
-    /// <summary>Check and clear the overview toggle flag (triggered by Alt+scroll).</summary>
     public bool TryDrainZoom()
     {
         if (!_zoomPending) return false;
@@ -121,18 +109,17 @@ internal sealed class MouseHook : IDisposable
 
     public bool IsDragging => _dragging;
 
-    private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+    private LRESULT HookCallback(int nCode, WPARAM wParam, LPARAM lParam)
     {
         if (nCode >= 0 && Enabled)
         {
-            int msg = wParam.ToInt32();
-            var hookStruct = Marshal.PtrToStructure<NativeMethods.MSLLHOOKSTRUCT>(lParam);
+            uint msg = (uint)wParam.Value;
+            var hookStruct = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
 
             switch (msg)
             {
-                case NativeMethods.WM_MBUTTONDOWN:
+                case PInvoke.WM_MBUTTONDOWN:
                     {
-                        // Middle-click on desktop, or Alt-only+middle-click anywhere
                         bool alt = !AppConfig.DisableAltPan
                                 && IsAltDown()
                                 && !IsCtrlDown()
@@ -146,18 +133,18 @@ internal sealed class MouseHook : IDisposable
                             _pendingDy = 0;
                             _hasPending = false;
                             DragStarted?.Invoke();
-                            return (IntPtr)1; // consume
+                            return (LRESULT)1;
                         }
                         ButtonDown?.Invoke();
                     }
                     break;
 
-                case NativeMethods.WM_LBUTTONDOWN:
-                case NativeMethods.WM_RBUTTONDOWN:
+                case PInvoke.WM_LBUTTONDOWN:
+                case PInvoke.WM_RBUTTONDOWN:
                     ButtonDown?.Invoke();
                     break;
 
-                case NativeMethods.WM_MOUSEMOVE:
+                case PInvoke.WM_MOUSEMOVE:
                     if (_dragging)
                     {
                         int dx = hookStruct.pt.X - _lastPoint.X;
@@ -171,72 +158,78 @@ internal sealed class MouseHook : IDisposable
                             _hasPending = true;
                             NotifyInput();
                         }
-
-                        // Don't consume moves — cursor must move freely.
-                        // The underlying window won't scroll because we
-                        // consumed WM_MBUTTONDOWN so it never saw the click.
                     }
                     break;
 
-                case NativeMethods.WM_MBUTTONUP:
+                case PInvoke.WM_MBUTTONUP:
                     if (_dragging)
                     {
                         _dragging = false;
                         _dragJustEnded = true;
                         NotifyInput();
-                        return (IntPtr)1; // consume
+                        return (LRESULT)1;
                     }
                     break;
 
-                case NativeMethods.WM_MOUSEWHEEL:
+                case PInvoke.WM_MOUSEWHEEL:
                     {
-                        // Alt+ScrollWheel = toggle overview map
                         bool alt = IsAltDown() && !IsCtrlDown() && !IsShiftDown();
                         if (alt && IsDesktopOrTaskbarAt(hookStruct.pt))
                         {
                             _zoomPending = true;
                             NotifyInput();
-                            return (IntPtr)1; // consume
+                            return (LRESULT)1;
                         }
                     }
                     break;
             }
         }
 
-        return NativeMethods.CallNextHookEx(_hookId, nCode, wParam, lParam);
+        return PInvoke.CallNextHookEx(_hook, nCode, wParam, lParam);
     }
 
-    private static bool IsAltDown() =>
-        (NativeMethods.GetKeyState(NativeMethods.VK_MENU) & KeyStateDownBit) != 0;
-
-    private static bool IsCtrlDown() =>
-        (NativeMethods.GetKeyState(NativeMethods.VK_CONTROL) & KeyStateDownBit) != 0;
-
-    private static bool IsShiftDown() =>
-        (NativeMethods.GetKeyState(NativeMethods.VK_SHIFT) & KeyStateDownBit) != 0;
-
-    private bool IsDesktopOrTaskbarAt(NativeMethods.POINT pt)
+    private static bool IsAltDown()
     {
-        IntPtr hwnd = NativeMethods.WindowFromPoint(pt);
-        if (hwnd == IntPtr.Zero)
+        return (PInvoke.GetKeyState((int)VIRTUAL_KEY.VK_MENU) & KeyStateDownBit) != 0;
+    }
+
+    private static bool IsCtrlDown()
+    {
+        return (PInvoke.GetKeyState((int)VIRTUAL_KEY.VK_CONTROL) & KeyStateDownBit) != 0;
+    }
+
+    private static bool IsShiftDown()
+    {
+        return (PInvoke.GetKeyState((int)VIRTUAL_KEY.VK_SHIFT) & KeyStateDownBit) != 0;
+    }
+
+    private unsafe bool IsDesktopOrTaskbarAt(Point pt)
+    {
+        HWND hwnd = PInvoke.WindowFromPoint(pt);
+        if (hwnd == HWND.Null)
             return true;
 
-        IntPtr root = NativeMethods.GetAncestor(hwnd, NativeMethods.GA_ROOT);
-        if (root == IntPtr.Zero)
+        HWND root = PInvoke.GetAncestor(hwnd, GET_ANCESTOR_FLAGS.GA_ROOT);
+        if (root == HWND.Null)
             root = hwnd;
 
-        // Extra surface (e.g., overview overlay in pan mode)
         if (_extraPanSurfaces.Contains(root))
             return true;
 
-        IntPtr desktop = NativeMethods.GetDesktopWindow();
-        IntPtr shell = NativeMethods.GetShellWindow();
+        HWND desktop = PInvoke.GetDesktopWindow();
+        HWND shell = PInvoke.GetShellWindow();
         if (root == desktop || root == shell)
             return true;
 
-        var className = new StringBuilder(256);
-        NativeMethods.GetClassName(root, className, 256);
-        string cls = className.ToString();
+        Span<char> classBuf = stackalloc char[256];
+        int classLen;
+        fixed (char* p = classBuf)
+        {
+            classLen = PInvoke.GetClassName(root, new PWSTR(p), classBuf.Length);
+        }
+        if (classLen == 0)
+            return false;
+        string cls = new string(classBuf[..classLen]);
         if (cls is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd")
             return true;
 
@@ -245,10 +238,7 @@ internal sealed class MouseHook : IDisposable
 
     public void Dispose()
     {
-        if (_hookId != IntPtr.Zero)
-        {
-            NativeMethods.UnhookWindowsHookEx(_hookId);
-            _hookId = IntPtr.Zero;
-        }
+        _hook?.Dispose();
+        _hook = null;
     }
 }

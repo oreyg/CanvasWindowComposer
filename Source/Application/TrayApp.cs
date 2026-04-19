@@ -48,7 +48,7 @@ internal sealed class TrayApp : ApplicationContext
         _minimap = new MinimapOverlay(_canvas);
         _search = new SearchOverlay(_canvas, _wm, winApi);
         _overview = new OverviewManager(_canvas, _wm, winApi);
-        _overview.ModeChanged += OnOverviewModeChanged;
+        _overview.BeforeModeChanged += OnOverviewModeChanged;
         _overview.Warmup();
         _canvas.CameraChanged += OnCameraChanged;
         _canvas.CollapseChanged += OnCollapseChanged;

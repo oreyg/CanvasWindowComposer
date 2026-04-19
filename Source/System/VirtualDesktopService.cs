@@ -82,11 +82,11 @@ internal sealed class VirtualDesktopService : IDisposable
         // Find any visible top-level window and ask which desktop it's on
         Guid desktopId = Guid.Empty;
 
-        NativeMethods.EnumWindows((hWnd, _) =>
+        WNDENUMPROC proc = (HWND hWnd, LPARAM _) =>
         {
-            if (!NativeMethods.IsWindowVisible(hWnd))
+            if (!PInvoke.IsWindowVisible(hWnd))
                 return true;
-            if (NativeMethods.GetParent(hWnd) != IntPtr.Zero)
+            if (PInvoke.GetParent(hWnd) != HWND.Null)
                 return true;
 
             try
@@ -102,7 +102,9 @@ internal sealed class VirtualDesktopService : IDisposable
             catch { }
 
             return true;
-        }, IntPtr.Zero);
+        };
+        PInvoke.EnumWindows(proc, 0);
+        GC.KeepAlive(proc);
 
         return desktopId;
     }

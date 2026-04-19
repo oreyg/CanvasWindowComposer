@@ -85,35 +85,36 @@ internal sealed class OverviewOverlay : Form
     public void SetClickThrough(bool enable)
     {
         if (!IsHandleCreated) return;
-        int ex = NativeMethods.GetWindowLong(Handle, NativeMethods.GWL_EXSTYLE);
-        int flags = (int)(NativeMethods.WS_EX_TRANSPARENT | NativeMethods.WS_EX_LAYERED);
+        HWND h = (HWND)Handle;
+        int ex = PInvoke.GetWindowLong(h, WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE);
+        int flags = (int)(WINDOW_EX_STYLE.WS_EX_TRANSPARENT | WINDOW_EX_STYLE.WS_EX_LAYERED);
         int updated = enable ? (ex | flags) : (ex & ~flags);
         if (updated == ex) return;
 
-        NativeMethods.SetWindowLong(Handle, NativeMethods.GWL_EXSTYLE, updated);
+        PInvoke.SetWindowLong(h, WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE, updated);
         if (enable)
         {
-            NativeMethods.SetLayeredWindowAttributes(Handle, 0, 255, NativeMethods.LWA_ALPHA);
+            PInvoke.SetLayeredWindowAttributes(h, (COLORREF)0, 255, LAYERED_WINDOW_ATTRIBUTES_FLAGS.LWA_ALPHA);
         }
-        NativeMethods.SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0,
-            NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER |
-            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_FRAMECHANGED);
+        PInvoke.SetWindowPos(h, HWND.Null, 0, 0, 0, 0,
+            SET_WINDOW_POS_FLAGS.SWP_NOMOVE | SET_WINDOW_POS_FLAGS.SWP_NOSIZE | SET_WINDOW_POS_FLAGS.SWP_NOZORDER |
+            SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE | SET_WINDOW_POS_FLAGS.SWP_FRAMECHANGED);
     }
 
     protected override void WndProc(ref Message m)
     {
-        if (m.Msg == (int)NativeMethods.WM_DPICHANGED)
+        if (m.Msg == (int)PInvoke.WM_DPICHANGED)
         {
             // lParam points to a RECT with the suggested new window rect at the new DPI
-            var rect = System.Runtime.InteropServices.Marshal.PtrToStructure<NativeMethods.RECT>(m.LParam);
-            int w = rect.Right - rect.Left;
-            int h = rect.Bottom - rect.Top;
+            var rect = System.Runtime.InteropServices.Marshal.PtrToStructure<RECT>(m.LParam);
+            int w = rect.right - rect.left;
+            int h = rect.bottom - rect.top;
 
             // Extract DPI from wParam (low word = X DPI, high word = Y DPI)
             int dpi = (int)((ulong)m.WParam.ToInt64() & 0xFFFF);
 
-            NativeMethods.SetWindowPos(Handle, IntPtr.Zero, rect.Left, rect.Top, w, h,
-                NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
+            PInvoke.SetWindowPos((HWND)Handle, HWND.Null, rect.left, rect.top, w, h,
+                SET_WINDOW_POS_FLAGS.SWP_NOZORDER | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE);
 
             Grid?.Resize(w, h);
             Grid?.SetDpiScale(dpi / StandardDpi);
