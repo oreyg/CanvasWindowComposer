@@ -60,7 +60,10 @@ echo.
 :: --- Publish C# app ---
 
 echo Publishing C# application...
-dotnet publish -c Release -o Install\publish-fd >nul 2>&1
+:: Wipe stale output so a previous publish (or the test project) can't leave
+:: behind a deps.json mismatching the current main-app build.
+if exist "Install\publish-fd" rmdir /s /q "Install\publish-fd"
+dotnet publish CanvasDesktop.csproj -c Release -o Install\publish-fd >nul 2>&1
 if %errorlevel% neq 0 (
     echo ERROR: dotnet publish failed.
     popd
