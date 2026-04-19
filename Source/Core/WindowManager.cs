@@ -18,6 +18,7 @@ internal sealed class WindowManager
     private readonly IWindowApi _pos;
     private readonly DllInjector _injector;
     private readonly VirtualDesktopService? _vds;
+    private readonly ProjectionWorker? _projection;
 
     // Track last projected screen positions to detect manual moves
     private readonly Dictionary<IntPtr, (int x, int y, int w, int h)> _lastScreen = new();
@@ -28,12 +29,13 @@ internal sealed class WindowManager
     // Temporarily suspends greedy draw (SetWindowRgn clipping)
     public bool SuspendGreedyDraw { get; set; }
 
-    public WindowManager(Canvas canvas, IWindowApi positioner, DllInjector injector, VirtualDesktopService? vds = null)
+    public WindowManager(Canvas canvas, IWindowApi positioner, DllInjector injector, VirtualDesktopService? vds = null, ProjectionWorker? projection = null)
     {
         _canvas = canvas;
         _pos = positioner;
         _injector = injector;
         _vds = vds;
+        _projection = projection;
     }
 
     /// <summary>
@@ -79,7 +81,10 @@ internal sealed class WindowManager
             _lastScreen[hWnd] = (sx, sy, sw, sh);
         }
 
-        _pos.BatchMove(batch, allowAsync);
+        if (_projection != null)
+            _projection.Schedule(batch, allowAsync);
+        else
+            _pos.BatchMove(batch, allowAsync);
     }
 
     /// <summary>
@@ -210,6 +215,9 @@ internal sealed class WindowManager
     /// <summary>Reset: restore all windows to world positions, clear canvas.</summary>
     public void Reset()
     {
+        // Drop any in-flight worker batch so it can't stomp on the sync reset below.
+        _projection?.ClearPending();
+
         foreach (var hWnd in _clippedWindows)
             _pos.UnclipWindow(hWnd);
         _clippedWindows.Clear();

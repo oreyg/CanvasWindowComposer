@@ -15,6 +15,7 @@ internal sealed class TrayApp : ApplicationContext
     private readonly DllInjector _injector;
     private readonly Canvas _canvas;
     private readonly WindowManager _wm;
+    private readonly ProjectionWorker _projection;
     private readonly VirtualDesktopService _vds;
     private readonly Dictionary<Guid, CanvasState> _desktopStates = new();
     private Guid _lastDesktopId;
@@ -24,7 +25,7 @@ internal sealed class TrayApp : ApplicationContext
     private readonly WinEventRouter _winEvents;
     private bool _enabled = true;
     private const int ReconcileTimerIntervalMs = 500;
-    private const int ReprojectTimerIntervalMs = 83; // ~12 times a second
+    private const int ReprojectTimerIntervalMs = 200; // ~5 Hz; just enough to keep WindowFromPoint accurate for click-passthrough
     private const long ForegroundSuppressionMs = 500;
     private const int TrayIconSizePx = 32;
     private const float IconLineWidth = 2f;
@@ -44,7 +45,8 @@ internal sealed class TrayApp : ApplicationContext
         _vds = new VirtualDesktopService();
         _lastDesktopId = _vds.CurrentDesktopId;
         _canvas = new Canvas();
-        _wm = new WindowManager(_canvas, winApi, _injector, _vds);
+        _projection = new ProjectionWorker(winApi);
+        _wm = new WindowManager(_canvas, winApi, _injector, _vds, _projection);
         _minimap = new MinimapOverlay(_canvas);
         _search = new SearchOverlay(_canvas, _wm, winApi);
         _overview = new OverviewManager(_canvas, _wm, winApi);
@@ -127,10 +129,15 @@ internal sealed class TrayApp : ApplicationContext
         _minimap.NotifyCanvasChanged();
         _overview.SyncCamera();
 
+        // Overview renders its own camera + thumbnails, so real windows don't
+        // need to track every frame — but clicks pass through the overlay
+        // (WS_EX_TRANSPARENT) and hit whichever real window is under the
+        // cursor, so we keep HWND positions roughly in sync for WindowFromPoint.
+        // Throttled; final reproject on overview close comes via OnCommitted.
         long ticksNow = Environment.TickCount64;
         if (ticksNow - _lastReprojectTick > ReprojectTimerIntervalMs)
         {
-            _wm.Reproject(allowAsync: true);
+            _wm.Reproject(allowAsync: false);
             _lastReprojectTick = ticksNow;
         }
     }
@@ -310,6 +317,7 @@ internal sealed class TrayApp : ApplicationContext
         _msgWindow.Dispose();
         _winEvents.Dispose();
         _wm.Reset();
+        _projection.Dispose();
         _mouseHook.Dispose();
         _overview.Dispose();
         _search.Close();
