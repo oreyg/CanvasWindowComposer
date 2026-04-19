@@ -26,6 +26,7 @@ internal sealed class MinimapOverlay : Form
     private const int MinRectSizePx = 2;
 
     private readonly Canvas _canvas;
+    private readonly IScreens _screens;
     private readonly Timer _fadeTimer;
     private int _fadeTicksRemaining;
 
@@ -49,9 +50,10 @@ internal sealed class MinimapOverlay : Form
 
     protected override bool ShowWithoutActivation => true;
 
-    public MinimapOverlay(Canvas canvas)
+    public MinimapOverlay(Canvas canvas, IScreens? screens = null)
     {
         _canvas = canvas;
+        _screens = screens ?? WinFormsScreens.Instance;
 
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
@@ -113,7 +115,7 @@ internal sealed class MinimapOverlay : Form
 
     private void PositionOnScreen()
     {
-        var screen = Screen.PrimaryScreen!.WorkingArea;
+        var screen = _screens.PrimaryWorkingArea;
         Location = new Point(
             screen.Right - Width - ScreenMargin,
             screen.Bottom - Height - ScreenMargin
@@ -133,7 +135,7 @@ internal sealed class MinimapOverlay : Form
         var (minX, minY, maxX, maxY) = extents.Value;
 
         // Include the viewport in the extents
-        var screen = Screen.PrimaryScreen!.Bounds;
+        var screen = _screens.PrimaryBounds;
         var viewport = _canvas.GetViewport(screen.Width, screen.Height);
         minX = Math.Min(minX, viewport.x);
         minY = Math.Min(minY, viewport.y);

@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Windows.Forms;
 
 namespace CanvasDesktop;
 
@@ -9,6 +8,13 @@ namespace CanvasDesktop;
 /// </summary>
 internal sealed class Win32WindowApi : IWindowApi
 {
+    private readonly IScreens _screens;
+
+    public Win32WindowApi(IScreens? screens = null)
+    {
+        _screens = screens ?? WinFormsScreens.Instance;
+    }
+
     private static readonly HashSet<string> ExcludedClasses = new()
     {
         "Progman",
@@ -169,11 +175,12 @@ internal sealed class Win32WindowApi : IWindowApi
 
     public IReadOnlyList<(int x, int y, int w, int h)> GetScreenWorkingAreas()
     {
-        var areas = new List<(int, int, int, int)>();
-        foreach (var screen in Screen.AllScreens)
+        var src = _screens.AllWorkingAreas;
+        var areas = new (int, int, int, int)[src.Count];
+        for (int i = 0; i < src.Count; i++)
         {
-            var wa = screen.WorkingArea;
-            areas.Add((wa.Left, wa.Top, wa.Width, wa.Height));
+            var s = src[i];
+            areas[i] = (s.X, s.Y, s.Width, s.Height);
         }
         return areas;
     }

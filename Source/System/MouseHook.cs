@@ -16,6 +16,7 @@ internal sealed class MouseHook : IDisposable
 {
     private const int KeyStateDownBit = 0x8000;
 
+    private readonly IAppConfig _config;
     private UnhookWindowsHookExSafeHandle? _hook;
     private readonly HOOKPROC _proc;
     private bool _dragging;
@@ -60,8 +61,9 @@ internal sealed class MouseHook : IDisposable
 
     public event Action? ButtonDown;
 
-    public MouseHook()
+    public MouseHook(IAppConfig config)
     {
+        _config = config;
         _proc = HookCallback;
     }
 
@@ -120,7 +122,7 @@ internal sealed class MouseHook : IDisposable
             {
                 case PInvoke.WM_MBUTTONDOWN:
                     {
-                        bool alt = !AppConfig.DisableAltPan
+                        bool alt = !_config.DisableAltPan
                                 && IsAltDown()
                                 && !IsCtrlDown()
                                 && !IsShiftDown();

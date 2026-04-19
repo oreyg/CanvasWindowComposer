@@ -44,6 +44,7 @@ internal sealed class OverviewManager : IDisposable
     private readonly Canvas _mainCanvas;
     private readonly WindowManager _wm;
     private readonly IWindowApi _pos;
+    private readonly IScreens _screens;
 
     public Mode CurrentMode { get; private set; } = Mode.Hidden;
     private ModeConfig _cfg = HiddenCfg;
@@ -98,18 +99,19 @@ internal sealed class OverviewManager : IDisposable
     {
         get
         {
-            var vs = SystemInformation.VirtualScreen;
+            var vs = _screens.VirtualScreen;
             double ox = vs.Width * (1.0 / _zoom - 1.0) / 2.0;
             double oy = vs.Height * (1.0 / _zoom - 1.0) / 2.0;
             return (_camX + ox, _camY + oy);
         }
     }
 
-    public OverviewManager(Canvas mainCanvas, WindowManager wm, IWindowApi positioner)
+    public OverviewManager(Canvas mainCanvas, WindowManager wm, IWindowApi positioner, IScreens? screens = null)
     {
         _mainCanvas = mainCanvas;
         _wm = wm;
         _pos = positioner;
+        _screens = screens ?? WinFormsScreens.Instance;
 
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
     }
@@ -400,7 +402,7 @@ internal sealed class OverviewManager : IDisposable
         // WorkerW spans the entire virtual screen. Position this monitor's
         // slice of it over this form's client area by setting a source rect.
         var b = pass.Screen.Bounds;
-        var vs = SystemInformation.VirtualScreen;
+        var vs = _screens.VirtualScreen;
         var props = new DWM_THUMBNAIL_PROPERTIES
         {
             dwFlags = PInvoke.DWM_TNP_RECTDESTINATION | PInvoke.DWM_TNP_RECTSOURCE |
@@ -634,7 +636,7 @@ internal sealed class OverviewManager : IDisposable
     {
         if (_selectedIndex < 0 || _selectedIndex >= _visibleWindows.Count) return;
         var (_, world) = _visibleWindows[_selectedIndex];
-        var vs = SystemInformation.VirtualScreen;
+        var vs = _screens.VirtualScreen;
 
         // Center overview camera on selected window (do NOT change zoom)
         _camX = world.X + world.W / 2 - vs.Width / (2 * _zoom);
@@ -808,7 +810,7 @@ internal sealed class OverviewManager : IDisposable
         if (_mainCanvas.IsCollapsed(hWnd))
             PInvoke.ShowWindow((HWND)hWnd, SHOW_WINDOW_CMD.SW_RESTORE);
 
-        var vs = SystemInformation.VirtualScreen;
+        var vs = _screens.VirtualScreen;
         _mainCanvas.CenterOn(world.X, world.Y, world.W, world.H, vs.Width, vs.Height);
         PInvoke.SetForegroundWindow((HWND)hWnd);
         TransitionTo(Mode.Hidden, syncCameraOnClose: false);

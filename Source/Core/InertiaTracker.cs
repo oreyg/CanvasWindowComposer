@@ -19,9 +19,15 @@ internal sealed class InertiaTracker
 
     private readonly object _lock = new();
     private readonly List<(double dx, double dy, long ticks)> _samples = new();
+    private readonly IClock _clock;
     private double _vx, _vy;
     private volatile bool _active;
     private long _lastTick;
+
+    public InertiaTracker(IClock? clock = null)
+    {
+        _clock = clock ?? SystemClock.Instance;
+    }
 
     public bool IsActive
     {
@@ -32,7 +38,7 @@ internal sealed class InertiaTracker
     {
         lock (_lock)
         {
-            _samples.Add((dx, dy, Environment.TickCount64));
+            _samples.Add((dx, dy, _clock.TickCount64));
             if (_samples.Count > SampleWindow)
                 _samples.RemoveRange(0, _samples.Count - SampleWindow);
         }
@@ -50,7 +56,7 @@ internal sealed class InertiaTracker
             if (_samples.Count >= 2)
             {
                 double sumDx = 0, sumDy = 0;
-                long now = Environment.TickCount64;
+                long now = _clock.TickCount64;
                 long oldest = now;
 
                 for (int i = _samples.Count - 1; i >= 0; i--)
@@ -76,7 +82,7 @@ internal sealed class InertiaTracker
 
         if (hasVelocity)
         {
-            _lastTick = Environment.TickCount64;
+            _lastTick = _clock.TickCount64;
             _active = true;
         }
         return hasVelocity;
@@ -100,7 +106,7 @@ internal sealed class InertiaTracker
     {
         if (!_active) return (0, 0, false);
 
-        long now = Environment.TickCount64;
+        long now = _clock.TickCount64;
         double dt = Math.Clamp(now - _lastTick, 1, MaxDeltaMs);
         _lastTick = now;
 

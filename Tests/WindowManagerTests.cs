@@ -6,11 +6,11 @@ namespace CanvasDesktop.Tests;
 
 public class WindowManagerTests
 {
-    private static (Canvas canvas, FakeWindowApi api, WindowManager wm) Create()
+    private static (Canvas canvas, FakeWindowApi api, WindowManager wm) Create(FakeAppConfig? config = null)
     {
         var canvas = new Canvas();
         var api = new FakeWindowApi();
-        var wm = new WindowManager(canvas, api, new DllInjector());
+        var wm = new WindowManager(canvas, api, new DllInjector(), config ?? new FakeAppConfig());
         return (canvas, api, wm);
     }
 
@@ -343,6 +343,41 @@ public class WindowManagerTests
 
         Assert.Single(api.LastBatch);
         Assert.Equal((IntPtr)2, api.LastBatch[0].hWnd);
+    }
+
+    // ==================== APP CONFIG FLAGS ====================
+
+    [Fact]
+    public void Reproject_WhenDisableGreedyDraw_DoesNotClipOffScreen()
+    {
+        var cfg = new FakeAppConfig { DisableGreedyDraw = true };
+        var (canvas, api, wm) = Create(cfg);
+
+        canvas.SetWindow((IntPtr)1, 5000, 5000, 800, 600);
+        api.AddWindow((IntPtr)1, 0, 0, 800, 600);
+
+        wm.Reproject();
+
+        // Greedy draw is disabled — window should be batched at its world coords,
+        // never clipped.
+        Assert.DoesNotContain((IntPtr)1, api.ClippedWindows);
+        Assert.Single(api.LastBatch);
+        Assert.Equal(5000, api.LastBatch[0].x);
+    }
+
+    [Fact]
+    public void Reproject_WhenSuspendGreedyDraw_DoesNotClipOffScreen()
+    {
+        var cfg = new FakeAppConfig(); // DisableGreedyDraw = false
+        var (canvas, api, wm) = Create(cfg);
+
+        canvas.SetWindow((IntPtr)1, 5000, 5000, 800, 600);
+        api.AddWindow((IntPtr)1, 0, 0, 800, 600);
+
+        wm.SuspendGreedyDraw = true;
+        wm.Reproject();
+
+        Assert.DoesNotContain((IntPtr)1, api.ClippedWindows);
     }
 
     // ==================== REPROJECT WINDOW ====================

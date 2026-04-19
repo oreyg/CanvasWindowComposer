@@ -5,25 +5,46 @@ using System.IO;
 namespace CanvasDesktop;
 
 /// <summary>
-/// Reads configuration from %APPDATA%/CanvasWindowComposer/config.ini
-/// Creates a default config file if it doesn't exist.
+/// User-toggleable feature flags. Implementations may be backed by a config
+/// file (<see cref="AppConfig"/>) or a fake (tests).
 /// </summary>
-internal sealed class AppConfig
+internal interface IAppConfig
+{
+    bool DisableSearch { get; }
+    bool DisableAltPan { get; }
+    bool DisableGreedyDraw { get; }
+    bool DisableDllInjection { get; }
+}
+
+/// <summary>
+/// Reads configuration from %APPDATA%/CanvasWindowComposer/config.ini and
+/// reloads on file change. Creates a default config file if it doesn't exist.
+/// </summary>
+internal sealed class AppConfig : IAppConfig
 {
     public static readonly string ConfigDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "CanvasWindowComposer");
 
     private static readonly string ConfigPath = Path.Combine(ConfigDir, "config.ini");
+    private const long ReloadDebounceMs = 200;
 
-    public static bool DisableSearch { get; private set; }
-    public static bool DisableAltPan { get; private set; }
-    public static bool DisableGreedyDraw { get; private set; }
-    public static bool DisableDllInjection { get; private set; }
+    private readonly IClock _clock;
+    private FileSystemWatcher? _watcher;
+    private long _lastReloadTick;
 
-    public static void Load()
+    public bool DisableSearch { get; private set; }
+    public bool DisableAltPan { get; private set; }
+    public bool DisableGreedyDraw { get; private set; }
+    public bool DisableDllInjection { get; private set; }
+
+    public AppConfig(IClock? clock = null)
     {
+        _clock = clock ?? SystemClock.Instance;
+    }
 
+    public void Load()
+    {
         if (!File.Exists(ConfigPath))
         {
             WriteDefault();
@@ -36,6 +57,31 @@ internal sealed class AppConfig
         DisableAltPan = GetBool(values, "DisableAltPan");
         DisableGreedyDraw = GetBool(values, "DisableGreedyDraw");
         DisableDllInjection = GetBool(values, "DisableDllInjection");
+    }
+
+    /// <summary>Watch config.ini for changes and reload automatically.</summary>
+    public void StartObservingChanges()
+    {
+        Directory.CreateDirectory(ConfigDir);
+
+        _watcher = new FileSystemWatcher(ConfigDir, "config.ini")
+        {
+            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.CreationTime,
+            EnableRaisingEvents = true
+        };
+
+        _watcher.Changed += OnConfigFileChanged;
+        _watcher.Created += OnConfigFileChanged;
+    }
+
+    private void OnConfigFileChanged(object sender, FileSystemEventArgs e)
+    {
+        long now = _clock.TickCount64;
+        if (now - _lastReloadTick < ReloadDebounceMs) return;
+        _lastReloadTick = now;
+
+        try { Load(); }
+        catch { }
     }
 
     private static void WriteDefault()
@@ -79,34 +125,6 @@ DisableDllInjection=false
         }
 
         return result;
-    }
-
-    private static long _lastReloadTick;
-    private const long ReloadDebounceMs = 200;
-
-    /// <summary>Watch config.ini for changes and reload automatically.</summary>
-    public static void StartObservingChanges()
-    {
-        Directory.CreateDirectory(ConfigDir);
-
-        var watcher = new FileSystemWatcher(ConfigDir, "config.ini")
-        {
-            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.CreationTime,
-            EnableRaisingEvents = true
-        };
-
-        watcher.Changed += OnConfigFileChanged;
-        watcher.Created += OnConfigFileChanged;
-    }
-
-    private static void OnConfigFileChanged(object sender, FileSystemEventArgs e)
-    {
-        long now = Environment.TickCount64;
-        if (now - _lastReloadTick < ReloadDebounceMs) return;
-        _lastReloadTick = now;
-
-        try { Load(); }
-        catch { }
     }
 
     private static bool GetBool(Dictionary<string, string> values, string key)

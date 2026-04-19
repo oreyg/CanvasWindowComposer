@@ -8,6 +8,9 @@ namespace CanvasDesktop;
 
 internal sealed class TrayApp : ApplicationContext
 {
+    private readonly IClock _clock;
+    private readonly IScreens _screens;
+    private readonly AppConfig _config;
     private readonly NotifyIcon _trayIcon;
     private readonly MouseHook _mouseHook;
     private readonly Timer _bgTimer; // reconcile, VD polling
@@ -35,28 +38,31 @@ internal sealed class TrayApp : ApplicationContext
     private long _lastOverlayClosedTick;
     private long _lastReprojectTick;
 
-    public TrayApp()
+    public TrayApp(IClock? clock = null, IScreens? screens = null)
     {
-        AppConfig.Load();
-        AppConfig.StartObservingChanges();
+        _clock = clock ?? SystemClock.Instance;
+        _screens = screens ?? WinFormsScreens.Instance;
+        _config = new AppConfig(_clock);
+        _config.Load();
+        _config.StartObservingChanges();
         GridRenderer.CompileShaders();
-        var winApi = new Win32WindowApi();
+        var winApi = new Win32WindowApi(_screens);
         _injector = new DllInjector();
         _vds = new VirtualDesktopService();
         _lastDesktopId = _vds.CurrentDesktopId;
         _canvas = new Canvas();
         _projection = new ProjectionWorker(winApi);
-        _wm = new WindowManager(_canvas, winApi, _injector, _vds, _projection);
-        _minimap = new MinimapOverlay(_canvas);
-        _search = new SearchOverlay(_canvas, _wm, winApi);
-        _overview = new OverviewManager(_canvas, _wm, winApi);
+        _wm = new WindowManager(_canvas, winApi, _injector, _config, _vds, _projection);
+        _minimap = new MinimapOverlay(_canvas, _screens);
+        _search = new SearchOverlay(_canvas, _wm, winApi, _screens);
+        _overview = new OverviewManager(_canvas, _wm, winApi, _screens);
         _overview.BeforeModeChanged += OnOverviewModeChanged;
         _overview.Warmup();
         _canvas.CameraChanged += OnCameraChanged;
         _canvas.CollapseChanged += OnCollapseChanged;
         _canvas.MaximizeChanged += OnMaximizeChanged;
         _canvas.Committed += OnCommitted;
-        _mouseHook = new MouseHook();
+        _mouseHook = new MouseHook(_config);
 
         _mouseHook.DragStarted += OnDragStarted;
         _mouseHook.ButtonDown += OnMouseButtonDown;
@@ -120,7 +126,7 @@ internal sealed class TrayApp : ApplicationContext
 
         if (to == OverviewManager.Mode.Hidden)
         {
-            _lastOverlayClosedTick = Environment.TickCount64;
+            _lastOverlayClosedTick = _clock.TickCount64;
             _canvas.Commit();
         }
     }
@@ -135,7 +141,7 @@ internal sealed class TrayApp : ApplicationContext
         // (WS_EX_TRANSPARENT) and hit whichever real window is under the
         // cursor, so we keep HWND positions roughly in sync for WindowFromPoint.
         // Throttled; final reproject on overview close comes via OnCommitted.
-        long ticksNow = Environment.TickCount64;
+        long ticksNow = _clock.TickCount64;
         if (ticksNow - _lastReprojectTick > ReprojectTimerIntervalMs)
         {
             _wm.Reproject(isTransient: true);
@@ -175,7 +181,7 @@ internal sealed class TrayApp : ApplicationContext
 
     private void OnSearchHotkey()
     {
-        if (!AppConfig.DisableSearch)
+        if (!_config.DisableSearch)
             _search.Toggle();
     }
 
@@ -189,7 +195,7 @@ internal sealed class TrayApp : ApplicationContext
 
     private void OnWindowMinimized(IntPtr hWnd)
     {
-        _lastWindowLostTick = Environment.TickCount64;
+        _lastWindowLostTick = _clock.TickCount64;
         if (_canvas.HasWindow(hWnd))
             _canvas.CollapseWindow(hWnd);
     }
@@ -203,7 +209,7 @@ internal sealed class TrayApp : ApplicationContext
 
     private void OnWindowDestroyed(IntPtr hWnd)
     {
-        _lastWindowLostTick = Environment.TickCount64;
+        _lastWindowLostTick = _clock.TickCount64;
         _wm.RemoveWindow(hWnd);
     }
 
@@ -232,14 +238,14 @@ internal sealed class TrayApp : ApplicationContext
 
     private void OnWindowFocused(IntPtr hwnd)
     {
-        long now = Environment.TickCount64;
+        long now = _clock.TickCount64;
         if (now - _lastWindowLostTick    < ForegroundSuppressionMs ||
             now - _lastOverlayClosedTick < ForegroundSuppressionMs)
             return;
 
         if (_canvas.HasWindow(hwnd))
         {
-            var screen = Screen.PrimaryScreen!.WorkingArea;
+            var screen = _screens.PrimaryWorkingArea;
             if (!_canvas.IsWindowOnScreen(hwnd, screen.Width, screen.Height))
             {
                 var world = _canvas.Windows[hwnd];

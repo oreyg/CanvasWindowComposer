@@ -17,6 +17,7 @@ internal sealed class WindowManager
     private readonly Canvas _canvas;
     private readonly IWindowApi _pos;
     private readonly DllInjector _injector;
+    private readonly IAppConfig _config;
     private readonly VirtualDesktopService? _vds;
     private readonly ProjectionWorker? _projection;
 
@@ -29,11 +30,12 @@ internal sealed class WindowManager
     // Temporarily suspends greedy draw (SetWindowRgn clipping)
     public bool SuspendGreedyDraw { get; set; }
 
-    public WindowManager(Canvas canvas, IWindowApi positioner, DllInjector injector, VirtualDesktopService? vds = null, ProjectionWorker? projection = null)
+    public WindowManager(Canvas canvas, IWindowApi positioner, DllInjector injector, IAppConfig config, VirtualDesktopService? vds = null, ProjectionWorker? projection = null)
     {
         _canvas = canvas;
         _pos = positioner;
         _injector = injector;
+        _config = config;
         _vds = vds;
         _projection = projection;
     }
@@ -55,7 +57,7 @@ internal sealed class WindowManager
             bool onScreen = IsOnAnyScreen(sx, sy, sw, sh);
 
             bool wasClipped = _clippedWindows.Contains(hWnd);
-            if (!AppConfig.DisableGreedyDraw && !SuspendGreedyDraw && !onScreen)
+            if (!_config.DisableGreedyDraw && !SuspendGreedyDraw && !onScreen)
             {
                 if (!wasClipped)
                 {
@@ -206,7 +208,7 @@ internal sealed class WindowManager
         _canvas.SetWindowFromScreen(hWnd, sx, sy, sw, sh);
         _lastScreen[hWnd] = (sx, sy, sw, sh);
 
-        if (!AppConfig.DisableDllInjection)
+        if (!_config.DisableDllInjection)
         {
             uint pid = _pos.GetWindowProcessId(hWnd);
             if (!_injector.IsInjected(pid))
