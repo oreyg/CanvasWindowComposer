@@ -26,7 +26,12 @@ internal class CVirtualDesktopManager { }
 /// </summary>
 internal sealed class VirtualDesktopService : IVirtualDesktops, IDisposable
 {
+    private const int PollIntervalMs = 500;
+
     private readonly IVirtualDesktopManager? _manager;
+    private readonly System.Threading.SynchronizationContext? _uiContext;
+    private readonly System.Threading.ManualResetEventSlim _stop = new(false);
+    private readonly System.Threading.Thread? _pollThread;
     private Guid _currentDesktopId;
 
     public Guid CurrentDesktopId
@@ -38,6 +43,12 @@ internal sealed class VirtualDesktopService : IVirtualDesktops, IDisposable
 
     public VirtualDesktopService()
     {
+        // Capture the UI sync context now (ctor runs on UI thread) so the
+        // polling thread can marshal the DesktopChanged event back. Falls
+        // back to firing on the polling thread if there's no sync context
+        // (e.g. headless tests).
+        _uiContext = System.Threading.SynchronizationContext.Current;
+
         try
         {
             _manager = (IVirtualDesktopManager)new CVirtualDesktopManager();
@@ -47,6 +58,42 @@ internal sealed class VirtualDesktopService : IVirtualDesktops, IDisposable
         {
             // COM not available (older OS, etc.)
             _manager = null;
+        }
+
+        if (_manager != null)
+        {
+            _pollThread = new System.Threading.Thread(PollLoop)
+            {
+                IsBackground = true,
+                Name = "VDSPoller"
+            };
+            _pollThread.Start();
+        }
+    }
+
+    private void PollLoop()
+    {
+        // ManualResetEventSlim.Wait returns true when set (Dispose), false on timeout.
+        while (!_stop.Wait(PollIntervalMs))
+        {
+            try
+            {
+                Guid newId = DetectCurrentDesktop();
+                if (newId == Guid.Empty || newId == _currentDesktopId) continue;
+
+                _currentDesktopId = newId;
+                Action? handler = DesktopChanged;
+                if (handler == null) continue;
+
+                if (_uiContext != null)
+                    _uiContext.Post(_ => handler.Invoke(), null);
+                else
+                    handler.Invoke();
+            }
+            catch
+            {
+                // Swallow — next tick will retry.
+            }
         }
     }
 
@@ -62,18 +109,6 @@ internal sealed class VirtualDesktopService : IVirtualDesktops, IDisposable
         catch { return true; }
     }
 
-    /// <summary>Poll for a desktop switch; fires <see cref="DesktopChanged"/> if one occurred.</summary>
-    public void Tick()
-    {
-        if (_manager == null) return;
-
-        Guid newId = DetectCurrentDesktop();
-        if (newId == _currentDesktopId || newId == Guid.Empty)
-            return;
-
-        _currentDesktopId = newId;
-        DesktopChanged?.Invoke();
-    }
 
     private Guid DetectCurrentDesktop()
     {
@@ -111,6 +146,9 @@ internal sealed class VirtualDesktopService : IVirtualDesktops, IDisposable
 
     public void Dispose()
     {
+        _stop.Set();
+        _pollThread?.Join(TimeSpan.FromSeconds(1));
+        _stop.Dispose();
         if (_manager != null)
             Marshal.ReleaseComObject(_manager);
     }

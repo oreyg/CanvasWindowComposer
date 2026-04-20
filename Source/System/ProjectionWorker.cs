@@ -24,7 +24,10 @@ internal sealed class ProjectionWorker : IDisposable
     // worker batch on the same HWNDs (would scramble WM_WINDOWPOSCHANGING/
     // CHANGED ordering and leave app client state stale).
     private readonly object _processLock = new();
-    private volatile bool _alive = true;
+    // Single source of truth for "is this worker still alive?" — replaces the
+    // old _alive volatile. Wait() observes it (cancellable wait), the loop
+    // checks it before starting a new batch, and Dispose triggers shutdown.
+    private readonly CancellationTokenSource _cts = new();
     private Job? _pending;
 
     private sealed class Job
@@ -71,26 +74,40 @@ internal sealed class ProjectionWorker : IDisposable
 
     private void Loop()
     {
-        while (_alive)
+        CancellationToken token = _cts.Token;
+        try
         {
-            _signal.Wait();
-            _signal.Reset();
-            if (!_alive) break;
-
-            lock (_processLock)
+            while (true)
             {
-                Job? job = Interlocked.Exchange(ref _pending, null);
-                if (job != null)
-                    _win32.BatchMove(job.Items, isAsync: job.IsAsync, isTransient: job.IsTransient);
+                _signal.Wait(token);
+                _signal.Reset();
+
+                // Take the job AND run BatchMove as one critical section. Otherwise
+                // ClearPending can observe _pending == null (we already grabbed it),
+                // acquire _processLock instantly, and let the caller start its own
+                // BatchMove before we enter the lock — concurrent SetWindowPos on
+                // the same HWNDs.
+                lock (_processLock)
+                {
+                    Job? job = Interlocked.Exchange(ref _pending, null);
+                    // Cancellation takes precedence over any pending batch — we
+                    // don't want to start new SetWindowPos work after Dispose.
+                    if (job != null && !token.IsCancellationRequested)
+                        _win32.BatchMove(job.Items, isAsync: job.IsAsync, isTransient: job.IsTransient);
+                }
             }
+        }
+        catch (OperationCanceledException)
+        {
+            // Normal shutdown.
         }
     }
 
     public void Dispose()
     {
-        _alive = false;
-        _signal.Set();
+        _cts.Cancel();
         _thread.Join(TimeSpan.FromSeconds(1));
         _signal.Dispose();
+        _cts.Dispose();
     }
 }

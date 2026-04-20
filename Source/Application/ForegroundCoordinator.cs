@@ -14,6 +14,7 @@ internal sealed class ForegroundCoordinator
     private const long ForegroundSuppressionMs = 500;
 
     private readonly Canvas _canvas;
+    private readonly IOverviewController _overview;
     private readonly IClock _clock;
     private readonly IScreens _screens;
 
@@ -28,6 +29,7 @@ internal sealed class ForegroundCoordinator
         IScreens screens)
     {
         _canvas = canvas;
+        _overview = overview;
         _clock = clock;
         _screens = screens;
 
@@ -41,10 +43,7 @@ internal sealed class ForegroundCoordinator
     private void OnOverviewModeChanged(OverviewMode from, OverviewMode to)
     {
         if (to == OverviewMode.Hidden)
-        {
             _lastOverlayClosedTick = _clock.TickCount64;
-            _canvas.Commit();
-        }
     }
 
     private void OnWindowMinimized(IntPtr hWnd)
@@ -59,6 +58,9 @@ internal sealed class ForegroundCoordinator
 
     private void OnWindowFocused(IntPtr hwnd)
     {
+        if (_overview.CurrentMode != OverviewMode.Hidden)
+            return;
+
         long now = _clock.TickCount64;
         if (now - _lastWindowLostTick    < ForegroundSuppressionMs ||
             now - _lastOverlayClosedTick < ForegroundSuppressionMs)

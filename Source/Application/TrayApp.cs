@@ -85,7 +85,6 @@ internal sealed class TrayApp : ApplicationContext
 
     private void OnBgTick(object? sender, EventArgs e)
     {
-        _vds.Tick();
         _wm.Tick();
     }
 

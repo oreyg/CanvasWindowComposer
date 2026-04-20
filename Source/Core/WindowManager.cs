@@ -107,6 +107,12 @@ internal sealed class WindowManager : IDisposable
 
     private void OnCommitted()
     {
+        // Sync — pan-end / overview-close commits need windows at their final
+        // positions before the next paint, otherwise users see a one-frame
+        // jitter as the worker batch lands after the form repaints. Cost is a
+        // UI-thread block on cross-process SetWindowPos SendMessage round-trips,
+        // tracked in Tracing/pan-hitch-findings.md as a known cost we accept
+        // here over the visual artifact.
         ReprojectSync();
     }
 

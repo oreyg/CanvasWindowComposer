@@ -8,16 +8,10 @@ internal sealed class FakeVirtualDesktops : IVirtualDesktops
     public event Action? DesktopChanged;
 
     public bool DefaultIsOnCurrent = true;
-    public int TickCalls;
 
     public bool IsOnCurrentDesktop(IntPtr hWnd)
     {
         return DefaultIsOnCurrent;
-    }
-
-    public void Tick()
-    {
-        TickCalls++;
     }
 
     /// <summary>Test helper: change <see cref="CurrentDesktopId"/> and raise <see cref="DesktopChanged"/>.</summary>

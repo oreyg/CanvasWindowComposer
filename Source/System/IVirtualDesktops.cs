@@ -11,9 +11,6 @@ internal interface IVirtualDesktops
     Guid CurrentDesktopId { get; }
     bool IsOnCurrentDesktop(IntPtr hWnd);
 
-    /// <summary>Raised after <see cref="Tick"/> detects a desktop switch.</summary>
+    /// <summary>Raised when the active virtual desktop changes.</summary>
     event Action? DesktopChanged;
-
-    /// <summary>Poll the OS; fire <see cref="DesktopChanged"/> if the active desktop changed.</summary>
-    void Tick();
 }
