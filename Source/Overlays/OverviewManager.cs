@@ -37,7 +37,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
     // Per-monitor passes
     private readonly List<OverviewOverlay> _passes = new();
 
-    /// <summary>HWNDs of all monitor forms (for MouseHook.ExtraPanSurface).</summary>
+    /// <summary>HWNDs of all monitor forms (for IInputRouter.SetExtraPanSurfaces).</summary>
     public IReadOnlyList<IntPtr> MonitorHandles
     {
         get

@@ -4,21 +4,46 @@ using System.Collections.Generic;
 namespace CanvasDesktop;
 
 /// <summary>
-/// Production <see cref="IInputRouter"/> wiring the low-level mouse hook,
-/// hidden message window (hotkeys + WM_CANVAS_INPUT), and WinEvent hooks
-/// into one composed source. Owns lifetime of each underlying component.
+/// Production <see cref="IInputRouter"/> wiring the raw-mouse polling thread,
+/// hidden message window (hotkeys), and Win32 event hooks into one composed
+/// source. Owns lifetime of each underlying component.
+///
+/// Mouse path: <see cref="RawMouseInput"/> drains WM_INPUT on a dedicated
+/// vsync-paced thread, parses to <see cref="MouseEvent"/>s in a ring buffer,
+/// and posts a per-frame callback to the UI sync context. The UI-thread
+/// callback drains the ring, fires <see cref="DragStarted"/> / <see cref="ButtonDown"/>
+/// directly, accumulates pan deltas + drag-end + zoom flags, then fires
+/// <see cref="InputAvailable"/> so subscribers can drain via TryDrain*.
 /// </summary>
 internal sealed class Win32InputRouter : IInputRouter, IDisposable
 {
-    private readonly MouseHook _mouseHook;
+    private readonly RawMouseInput _mouse;
     private readonly MessageWindow _msgWindow;
     private readonly Win32EventRouter _winEvents;
+
+    // Drainable mouse state, populated on the UI thread by DrainRing.
+    private int _pendingPanDx;
+    private int _pendingPanDy;
+    private bool _hasPendingPan;
+    private bool _dragJustEnded;
+    private bool _zoomPending;
 
     public event Action? InputAvailable;
     public event Action? DragStarted;
     public event Action? ButtonDown;
     public event Action? SearchHotkey;
     public event Action? OverviewHotkey;
+    public event Action? EscPressed;
+
+    public void EnableEscHotkey()
+    {
+        _msgWindow.EnableEscHotkey(() => EscPressed?.Invoke());
+    }
+
+    public void DisableEscHotkey()
+    {
+        _msgWindow.DisableEscHotkey();
+    }
     public event Action<IntPtr>? WindowMinimized;
     public event Action<IntPtr>? WindowDestroyed;
     public event Action<IntPtr>? WindowShown;
@@ -30,16 +55,12 @@ internal sealed class Win32InputRouter : IInputRouter, IDisposable
 
     public Win32InputRouter(IAppConfig config)
     {
-        _mouseHook = new MouseHook(config);
-        _mouseHook.DragStarted += () => DragStarted?.Invoke();
-        _mouseHook.ButtonDown  += () => ButtonDown?.Invoke();
+        _mouse = new RawMouseInput(config, OnInputFrame);
 
         _msgWindow = new MessageWindow();
         _msgWindow.RegisterHandlers(
             onSearchHotkey:   () => SearchHotkey?.Invoke(),
-            onOverviewHotkey: () => OverviewHotkey?.Invoke(),
-            onCanvasInput:    () => InputAvailable?.Invoke());
-        _mouseHook.SetNotifyTarget(_msgWindow.Handle);
+            onOverviewHotkey: () => OverviewHotkey?.Invoke());
 
         _winEvents = new Win32EventRouter();
         _winEvents.WindowMinimized += h => WindowMinimized?.Invoke(h);
@@ -51,44 +72,96 @@ internal sealed class Win32InputRouter : IInputRouter, IDisposable
         _winEvents.AltTabStarted   += () => AltTabStarted?.Invoke();
         _winEvents.AltTabEnded     += () => AltTabEnded?.Invoke();
 
-        _mouseHook.Install();
+        _mouse.Install();
+    }
+
+    /// <summary>
+    /// Called on the UI thread once per vsync (when <see cref="RawMouseInput"/>
+    /// has new events). Drains the ring buffer: button-down / drag-start fire
+    /// events synchronously; pan / drag-end / zoom go into drainable state and
+    /// callers consume via TryDrain* after <see cref="InputAvailable"/>.
+    /// </summary>
+    private void OnInputFrame()
+    {
+        bool any = false;
+        while (_mouse.Events.TryDequeue(out var evt))
+        {
+            any = true;
+            switch (evt.Type)
+            {
+                case MouseEventType.DragStarted:
+                    DragStarted?.Invoke();
+                    break;
+                case MouseEventType.ButtonDown:
+                    ButtonDown?.Invoke();
+                    break;
+                case MouseEventType.Pan:
+                    _pendingPanDx += evt.Dx;
+                    _pendingPanDy += evt.Dy;
+                    _hasPendingPan = true;
+                    break;
+                case MouseEventType.DragEnded:
+                    _dragJustEnded = true;
+                    break;
+                case MouseEventType.Zoom:
+                    _zoomPending = true;
+                    break;
+            }
+        }
+
+        if (any)
+            InputAvailable?.Invoke();
     }
 
     public bool TryDrainPanDelta(out int dx, out int dy)
     {
-        return _mouseHook.TryDrainDelta(out dx, out dy);
+        if (!_hasPendingPan)
+        {
+            dx = dy = 0;
+            return false;
+        }
+        dx = _pendingPanDx;
+        dy = _pendingPanDy;
+        _pendingPanDx = 0;
+        _pendingPanDy = 0;
+        _hasPendingPan = false;
+        return dx != 0 || dy != 0;
     }
 
     public bool TryDrainDragEnded()
     {
-        return _mouseHook.TryDrainDragEnded();
+        if (!_dragJustEnded) return false;
+        _dragJustEnded = false;
+        return true;
     }
 
     public bool TryDrainZoom()
     {
-        return _mouseHook.TryDrainZoom();
+        if (!_zoomPending) return false;
+        _zoomPending = false;
+        return true;
     }
 
     public bool Enabled
     {
-        get { return _mouseHook.Enabled; }
-        set { _mouseHook.Enabled = value; }
+        get { return _mouse.Enabled; }
+        set { _mouse.Enabled = value; }
     }
 
     public void SetExtraPanSurfaces(IEnumerable<IntPtr> handles)
     {
-        _mouseHook.SetExtraPanSurfaces(handles);
+        _mouse.SetExtraPanSurfaces(handles);
     }
 
     public void ClearExtraPanSurfaces()
     {
-        _mouseHook.ClearExtraPanSurfaces();
+        _mouse.ClearExtraPanSurfaces();
     }
 
     public void Dispose()
     {
         _winEvents.Dispose();
-        _mouseHook.Dispose();
+        _mouse.Dispose();
         _msgWindow.Dispose();
     }
 }

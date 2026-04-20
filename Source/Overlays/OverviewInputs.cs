@@ -24,6 +24,7 @@ internal sealed class OverviewInputs
         input.ButtonDown           += OnMouseButtonDown;
         input.OverviewHotkey       += OnOverviewHotkey;
         input.InputAvailable       += OnCanvasInput;
+        input.EscPressed           += OnEscPressed;
     }
 
     private void OnCanvasCameraChanged()
@@ -37,6 +38,21 @@ internal sealed class OverviewInputs
             _input.SetExtraPanSurfaces(_overview.MonitorHandles);
         else
             _input.ClearExtraPanSurfaces();
+
+        // Esc closes Zooming via a global hotkey rather than form KeyDown:
+        // only _passes[0] gets Activate() and keyboard focus can drift in
+        // multi-monitor setups, so the form-level handler isn't reliable.
+        // Panning is by design — Esc is left alone there.
+        if (to == OverviewMode.Zooming)
+            _input.EnableEscHotkey();
+        else if (from == OverviewMode.Zooming)
+            _input.DisableEscHotkey();
+    }
+
+    private void OnEscPressed()
+    {
+        if (_overview.CurrentMode == OverviewMode.Zooming)
+            _overview.TransitionTo(OverviewMode.Hidden);
     }
 
     private void OnDragStarted()

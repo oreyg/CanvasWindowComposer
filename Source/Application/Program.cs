@@ -43,6 +43,17 @@ internal static class Program
 
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
+
+        // Install the WinForms sync context BEFORE constructing TrayApp.
+        // Application.Run installs one for us, but only after our ctor runs —
+        // RawMouseInput needs to capture SynchronizationContext.Current at
+        // construction time so its polling thread can post per-frame callbacks
+        // back to the UI. Application.Run reuses an existing WinFormsSyncContext
+        // on the same thread, so this is safe.
+        if (System.Threading.SynchronizationContext.Current == null)
+            System.Threading.SynchronizationContext.SetSynchronizationContext(
+                new System.Windows.Forms.WindowsFormsSynchronizationContext());
+
         Application.Run(new TrayApp());
     }
 

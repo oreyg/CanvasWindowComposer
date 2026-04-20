@@ -10,6 +10,28 @@ internal sealed class FakeInputRouter : IInputRouter
     public event Action? ButtonDown;
     public event Action? SearchHotkey;
     public event Action? OverviewHotkey;
+    public event Action? EscPressed;
+
+    public int EnableEscHotkeyCalls;
+    public int DisableEscHotkeyCalls;
+    public bool EscHotkeyEnabled;
+
+    public void EnableEscHotkey()
+    {
+        EnableEscHotkeyCalls++;
+        EscHotkeyEnabled = true;
+    }
+
+    public void DisableEscHotkey()
+    {
+        DisableEscHotkeyCalls++;
+        EscHotkeyEnabled = false;
+    }
+
+    public void RaiseEscPressed()
+    {
+        EscPressed?.Invoke();
+    }
     public event Action<IntPtr>? WindowMinimized;
     public event Action<IntPtr>? WindowDestroyed;
     public event Action<IntPtr>? WindowShown;

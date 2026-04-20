@@ -6,7 +6,7 @@ namespace CanvasDesktop;
 /// <summary>
 /// Unified injectable source for everything the orchestrator listens to:
 /// low-level mouse hook signals, system hotkeys, and Win32 window-lifecycle
-/// events. Production wraps the real MouseHook + MessageWindow + Win32EventRouter
+/// events. Production wraps RawMouseInput + MessageWindow + Win32EventRouter
 /// trio; tests use <c>FakeInputRouter</c> to drive synthetic input.
 /// </summary>
 internal interface IInputRouter
@@ -26,6 +26,15 @@ internal interface IInputRouter
 
     event Action? SearchHotkey;
     event Action? OverviewHotkey;
+
+    /// <summary>
+    /// Raised when the user presses Esc while the Esc hotkey is enabled.
+    /// Esc is registered/unregistered on demand (via <see cref="EnableEscHotkey"/>
+    /// / <see cref="DisableEscHotkey"/>) so we don't steal it globally.
+    /// </summary>
+    event Action? EscPressed;
+    void EnableEscHotkey();
+    void DisableEscHotkey();
 
     event Action<IntPtr>? WindowMinimized;
     event Action<IntPtr>? WindowDestroyed;
