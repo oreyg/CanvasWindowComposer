@@ -28,6 +28,7 @@ internal sealed class TrayApp : ApplicationContext
     private readonly Win32InputRouter _input;
     private readonly DesktopStateCache _desktops;
     private readonly ForegroundCoordinator _foreground;
+    private readonly DesktopRefreshWatcher _refreshWatcher;
     private bool _enabled = true;
 
     public TrayApp(IClock? clock = null, IScreens? screens = null)
@@ -54,11 +55,17 @@ internal sealed class TrayApp : ApplicationContext
         _minimap = new MinimapOverlay(_canvas, _input, _desktops, _screens);
         _search = new SearchOverlay(_canvas, _wm, winApi, _input, _config, _screens);
 
+        // Mirror the tray's Refresh action whenever the user refreshes the
+        // desktop in Explorer (F5 / right-click → Refresh) — that's a strong
+        // hint they want the visual state cleaned up.
+        _refreshWatcher = new DesktopRefreshWatcher(_wm.RefreshAllWindows);
+
         _bgTimer = new Timer { Interval = ReconcileTimerIntervalMs };
         _bgTimer.Tick += OnBgTick;
         _bgTimer.Start();
 
         var toggleItem = new ToolStripMenuItem("Enabled", null, OnToggle) { Checked = true };
+        var refreshItem = new ToolStripMenuItem("Refresh", null, OnRefresh);
         var openConfigItem = new ToolStripMenuItem("Open Config Directory", null,
             (_, _) => System.Diagnostics.Process.Start("explorer.exe", AppConfig.ConfigDir));
         var exitItem = new ToolStripMenuItem("Exit", null, OnExit);
@@ -67,6 +74,7 @@ internal sealed class TrayApp : ApplicationContext
         menu.Items.Add(new ToolStripLabel("Canvas Desktop") { Font = new Font("Segoe UI", 9, FontStyle.Bold) });
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(toggleItem);
+        menu.Items.Add(refreshItem);
         menu.Items.Add(openConfigItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(exitItem);
@@ -103,10 +111,16 @@ internal sealed class TrayApp : ApplicationContext
             : "Canvas Desktop - Disabled";
     }
 
+    private void OnRefresh(object? sender, EventArgs e)
+    {
+        _wm.RefreshAllWindows();
+    }
+
     private void OnExit(object? sender, EventArgs e)
     {
         _bgTimer.Stop();
         _bgTimer.Dispose();
+        _refreshWatcher.Dispose();
         _input.Dispose();
         _wm.Reset();
         _wm.Dispose();

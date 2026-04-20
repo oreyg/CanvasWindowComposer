@@ -377,6 +377,28 @@ internal sealed class WindowManager : IDisposable
             _win32.ClipWindow(hWnd);
     }
 
+    /// <summary>
+    /// Recovery action for the tray "Refresh" menu: enumerate every visible
+    /// top-level window (not just canvas-tracked ones — third-party tools like
+    /// Aero Snap or screen recorders can leave stray clip regions on windows
+    /// we never registered) and clear any window region + force a full repaint.
+    /// </summary>
+    public unsafe void RefreshAllWindows()
+    {
+        _clippedWindows.Clear();
+        _win32.EnumWindows(hWnd =>
+        {
+            if (_win32.IsWindowVisible(hWnd))
+            {
+                _win32.UnclipWindow(hWnd);
+                PInvoke.RedrawWindow((HWND)hWnd, null, (HRGN)IntPtr.Zero,
+                    REDRAW_WINDOW_FLAGS.RDW_INVALIDATE | REDRAW_WINDOW_FLAGS.RDW_ERASE |
+                    REDRAW_WINDOW_FLAGS.RDW_FRAME | REDRAW_WINDOW_FLAGS.RDW_ALLCHILDREN);
+            }
+            return true;
+        });
+    }
+
     /// <summary>Register a new window into the canvas from its screen position.</summary>
     public void RegisterWindow(IntPtr hWnd)
     {
