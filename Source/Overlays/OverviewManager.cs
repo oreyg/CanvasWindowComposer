@@ -37,6 +37,14 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
     // Per-monitor passes
     private readonly List<OverviewOverlay> _passes = new();
 
+    // Cached shell HWNDs — stable across overview opens, invalidated on display
+    // topology change (where _passes themselves are rebuilt) and self-healing
+    // via IsWindow() guards (explorer.exe restart destroys Progman / WorkerW /
+    // Shell_TrayWnd and recreates them with new handles). Skips ~33ms of
+    // EnumWindows + Progman SendMessage on every overview open after the first.
+    private IntPtr _cachedDesktopWallpaperHwnd;
+    private List<IntPtr>? _cachedTaskbarHwnds;
+
     /// <summary>HWNDs of all monitor forms (for IInputRouter.SetExtraPanSurfaces).</summary>
     public IReadOnlyList<IntPtr> MonitorHandles
     {
@@ -91,6 +99,11 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
             p.Dispose();
         }
         _passes.Clear();
+
+        // Shell HWNDs may have moved (Progman / WorkerW are recreated on some
+        // display changes; secondary taskbars come and go with monitors).
+        _cachedDesktopWallpaperHwnd = IntPtr.Zero;
+        _cachedTaskbarHwnds = null;
 
         EnsurePasses();
         foreach (var p in _passes)
@@ -275,6 +288,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         _wm.ReclipAll();
         _mainCanvas.Commit();
         _wm.SuspendReconcile = false;
+        _wm.SuspendProjection = false;
 
         foreach (var p in _passes)
         {
@@ -294,17 +308,33 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
             p.SetClickThrough(!_cfg.InputEnabled);
         }
         UpdateAllThumbnails();
+
+        // During Zooming, real-window positions don't need to track the camera
+        // (click-through is off — clicks land on the overview form, not real
+        // windows). Suppressing projection eliminates the worker-job wait at
+        // close-time ReprojectSync.
+        _wm.SuspendProjection = (CurrentMode == OverviewMode.Zooming);
     }
 
     // ==================== THUMBNAILS ====================
 
     private void RegisterDesktopThumbnail(OverviewOverlay pass)
     {
-        IntPtr desktopWnd = FindDesktopWallpaperWindow();
+        IntPtr desktopWnd = GetDesktopWallpaperHwnd();
         if (desktopWnd == IntPtr.Zero) return;
 
         HRESULT hr = PInvoke.DwmRegisterThumbnail((HWND)pass.Handle, (HWND)desktopWnd, out nint thumb);
         pass.DesktopThumb = hr.Succeeded ? thumb : IntPtr.Zero;
+    }
+
+    private IntPtr GetDesktopWallpaperHwnd()
+    {
+        if (_cachedDesktopWallpaperHwnd == IntPtr.Zero
+            || !PInvoke.IsWindow((HWND)_cachedDesktopWallpaperHwnd))
+        {
+            _cachedDesktopWallpaperHwnd = FindDesktopWallpaperWindow();
+        }
+        return _cachedDesktopWallpaperHwnd;
     }
 
     private void UnregisterDesktopThumbnail(OverviewOverlay pass)
@@ -353,10 +383,34 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         PInvoke.DwmUpdateThumbnailProperties(pass.DesktopThumb, props);
     }
 
-    private unsafe void RegisterTaskbarThumbnails(OverviewOverlay pass)
+    private void RegisterTaskbarThumbnails(OverviewOverlay pass)
     {
+        foreach (var hwnd in GetTaskbarHwnds())
+            AddTaskbar(pass, (HWND)hwnd);
+    }
+
+    private List<IntPtr> GetTaskbarHwnds()
+    {
+        if (_cachedTaskbarHwnds == null || !AllAlive(_cachedTaskbarHwnds))
+            _cachedTaskbarHwnds = EnumerateTaskbarHwnds();
+        return _cachedTaskbarHwnds;
+    }
+
+    private static bool AllAlive(List<IntPtr> hwnds)
+    {
+        foreach (var h in hwnds)
+        {
+            if (!PInvoke.IsWindow((HWND)h)) return false;
+        }
+        return true;
+    }
+
+    private static unsafe List<IntPtr> EnumerateTaskbarHwnds()
+    {
+        var result = new List<IntPtr>();
+
         HWND primary = PInvoke.FindWindow("Shell_TrayWnd", null);
-        if (primary != HWND.Null) AddTaskbar(pass, primary);
+        if (primary != HWND.Null) result.Add(primary);
 
         WNDENUMPROC proc = (HWND hWnd, LPARAM _) =>
         {
@@ -367,11 +421,13 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
                 len = PInvoke.GetClassName(hWnd, new PWSTR(p), buf.Length);
             }
             if (len > 0 && new string(buf[..len]) == "Shell_SecondaryTrayWnd")
-                AddTaskbar(pass, hWnd);
+                result.Add(hWnd);
             return true;
         };
         PInvoke.EnumWindows(proc, 0);
         GC.KeepAlive(proc);
+
+        return result;
     }
 
     private static void AddTaskbar(OverviewOverlay pass, HWND hwnd)

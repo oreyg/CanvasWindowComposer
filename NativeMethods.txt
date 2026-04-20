@@ -27,6 +27,7 @@ WM_DPICHANGED
 
 // Window enumeration & properties
 EnumWindows
+IsWindow
 IsWindowVisible
 GetWindowLong
 SetWindowLong

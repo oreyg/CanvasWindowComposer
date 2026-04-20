@@ -34,6 +34,17 @@ internal sealed class WindowManager : IDisposable
     // Temporarily suspends greedy draw (SetWindowRgn clipping)
     public bool SuspendGreedyDraw { get; set; }
 
+    /// <summary>
+    /// While true, <see cref="OnCameraChanged"/> short-circuits — no transient
+    /// reproject is scheduled on the worker. Set during overview Zooming, when
+    /// click-through is off and real-window positions don't need to track the
+    /// camera for hit-testing. Eliminates the worker-job wait at overview close
+    /// (we'd otherwise queue a batch from the close-time SetCamera and then
+    /// immediately wait for it inside ReprojectSync). <see cref="OnCommitted"/>
+    /// bypasses this gate so the explicit close commit still runs.
+    /// </summary>
+    public bool SuspendProjection { get; set; }
+
     private bool _suspendReconcile;
     private bool _reconcilePending;
 
@@ -118,6 +129,8 @@ internal sealed class WindowManager : IDisposable
 
     private void OnCameraChanged()
     {
+        if (SuspendProjection) return;
+
         // Overview renders its own camera + thumbnails, so real windows don't
         // need to track every frame — but clicks pass through the overlay
         // (WS_EX_TRANSPARENT) and hit whichever real window is under the
