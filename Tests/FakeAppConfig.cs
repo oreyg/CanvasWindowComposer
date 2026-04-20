@@ -6,4 +6,5 @@ internal sealed class FakeAppConfig : IAppConfig
     public bool DisableAltPan { get; set; }
     public bool DisableGreedyDraw { get; set; }
     public bool DisableDllInjection { get; set; }
+    public bool DisableMouseCurve { get; set; }
 }

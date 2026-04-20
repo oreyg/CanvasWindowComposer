@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
 using Windows.Win32.UI.Input;
@@ -8,20 +10,26 @@ using Windows.Win32.UI.Input;
 namespace CanvasDesktop;
 
 /// <summary>
-/// Dedicated polling thread for raw mouse input. Replaces the old WH_MOUSE_LL
-/// hook so no UI/close work runs on a hook thread (LowLevelHooksTimeout ~300ms;
-/// ReprojectSync can exceed that). Paces on DwmFlush (monitor vsync): on each
-/// frame, drains all accumulated raw events via a single GetRawInputBuffer
-/// call, parses them, pushes parsed events to a ring buffer, and signals the
-/// UI thread to consume the buffer.
+/// Dedicated polling thread for raw mouse input.
 /// </summary>
 internal sealed class RawMouseInput : IDisposable
 {
     private const int KeyStateDownBit = 0x8000;
-    private const int RawInputBufferBytes = 16 * 1024; // ~350 events worth at x64 layout
+    // Initial buffer size — grown on demand if a wake brings more events than fit.
+    // Without growth, GetRawInputBuffer returns ERROR_INSUFFICIENT_BUFFER and we
+    // can't drain. The OS then coalesces queued WM_INPUT messages, summing per-
+    // report lLastX into a single coarse delta — which makes our per-event curve
+    // amplification land in a higher band than Windows applied to the cursor,
+    // producing a perceived 2x pan after any drag that left the UI thread busy.
+    private const int RawInputBufferInitialBytes = 16 * 1024;
+    private const int ERROR_INSUFFICIENT_BUFFER = 0x7A;
+    private const uint INFINITE = 0xFFFFFFFF;
+    private const uint WAIT_OBJECT_0 = 0;
+    private const uint WAIT_FAILED = 0xFFFFFFFF;
     private static readonly IntPtr HWND_MESSAGE = new(-3);
 
     private readonly IAppConfig _config;
+    private readonly MouseCurveScaler? _curve;
 
     private volatile HashSet<IntPtr> _extraPanSurfaces = new();
     public void SetExtraPanSurfaces(IEnumerable<IntPtr> handles)
@@ -41,6 +49,7 @@ internal sealed class RawMouseInput : IDisposable
     private readonly SynchronizationContext _uiContext;
     private readonly SendOrPostCallback _uiPost;
     private readonly Action _onFrame;
+    private int _uiPostPending;
 
     // Drag state — polling thread only
     private bool _dragging;
@@ -48,16 +57,11 @@ internal sealed class RawMouseInput : IDisposable
 
     private Thread? _thread;
     private NativeWindow? _sink;
-    private volatile bool _alive = true;
+    private readonly ManualResetEvent _shutdown = new(false);
     private readonly ManualResetEventSlim _started = new(false);
 
-    public bool IsDragging
-    {
-        get { return _dragging; }
-    }
-
-    /// <param name="config">App config (used for DisableAltPan).</param>
-    /// <param name="onFrame">Invoked on the UI thread once per vsync when the buffer has new events.</param>
+    /// <param name="config">App config (DisableAltPan, DisableMouseCurve).</param>
+    /// <param name="onFrame">Invoked on the UI thread once per drain burst.</param>
     /// <remarks>
     /// Must be constructed on the UI thread — captures
     /// <see cref="SynchronizationContext.Current"/> at ctor time so the polling
@@ -69,11 +73,18 @@ internal sealed class RawMouseInput : IDisposable
         _uiContext = SynchronizationContext.Current
             ?? throw new InvalidOperationException("RawMouseInput must be constructed on the UI thread.");
         _onFrame = onFrame;
-        _uiPost = _ => _onFrame();
+        _uiPost = _ =>
+        {
+            Interlocked.Exchange(ref _uiPostPending, 0);
+            _onFrame();
+        };
+        _curve = config.DisableMouseCurve ? null : new MouseCurveScaler();
     }
 
     public void Install()
     {
+        EnsureNotWow64();
+
         _thread = new Thread(ThreadProc)
         {
             IsBackground = true,
@@ -86,17 +97,71 @@ internal sealed class RawMouseInput : IDisposable
 
     public void Dispose()
     {
-        _alive = false;
+        _shutdown.Set();
         _thread?.Join(TimeSpan.FromSeconds(1));
+        _shutdown.Dispose();
         _started.Dispose();
+    }
+
+    /// <summary>
+    /// We trust the CsWin32-generated RAWINPUT layout for the process bitness.
+    /// Under WOW64 (32-bit on 64-bit Windows), the kernel returns RAWINPUT in
+    /// 64-bit layout — header is 8 bytes larger than what our struct expects,
+    /// shifting the RAWMOUSE union and producing garbage deltas. We ship x64
+    /// only, so just refuse to start under WOW64 rather than carry an offset
+    /// fixup we can't realistically test.
+    /// </summary>
+    private static unsafe void EnsureNotWow64()
+    {
+        BOOL isWow64 = false;
+        if (PInvoke.IsWow64Process(PInvoke.GetCurrentProcess(), &isWow64) && isWow64)
+        {
+            throw new PlatformNotSupportedException(
+                "RawMouseInput does not support 32-bit process on 64-bit Windows (WOW64).");
+        }
     }
 
     // ==================== POLLING THREAD ====================
 
     private unsafe void ThreadProc()
     {
-        // Sink HWND is required for RegisterRawInputDevices. We don't route any
-        // messages through its WndProc — GetRawInputBuffer drains WM_INPUT directly.
+        bool registered = CreateSinkAndRegister();
+        _started.Set();
+        if (!registered) return;
+
+        // Heap-allocated, grown on ERROR_INSUFFICIENT_BUFFER. SDL does the same.
+        // A stack buffer can't grow, so a momentary backlog (UI thread busy with
+        // inertia + thumbnail updates) would leave events undrained -> coalesced.
+        int bufferBytes = RawInputBufferInitialBytes;
+        IntPtr buffer = Marshal.AllocHGlobal(bufferBytes);
+        HANDLE shutdown = (HANDLE)_shutdown.SafeWaitHandle.DangerousGetHandle();
+
+        try
+        {
+            while (WaitForInput(shutdown))
+            {
+                if (DrainInput(ref buffer, ref bufferBytes)
+                    && Interlocked.Exchange(ref _uiPostPending, 1) == 0)
+                {
+                    _uiContext.Post(_uiPost, null);
+                }
+            }
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+            _sink!.DestroyHandle();
+        }
+    }
+
+    /// <summary>
+    /// Create the message-only sink HWND and register for raw mouse input.
+    /// The sink exists only to host the device registration — we never dispatch
+    /// from its WndProc; <see cref="PInvoke.GetRawInputBuffer"/> drains the
+    /// WM_INPUT messages directly.
+    /// </summary>
+    private unsafe bool CreateSinkAndRegister()
+    {
         _sink = new NativeWindow();
         _sink.CreateHandle(new CreateParams { Parent = HWND_MESSAGE });
 
@@ -107,47 +172,66 @@ internal sealed class RawMouseInput : IDisposable
             dwFlags = RAWINPUTDEVICE_FLAGS.RIDEV_INPUTSINK,
             hwndTarget = (HWND)_sink.Handle
         };
-        BOOL ok = PInvoke.RegisterRawInputDevices(&rid, 1, (uint)sizeof(RAWINPUTDEVICE));
-        _started.Set();
-        if (!ok)
-        {
-            _sink.DestroyHandle();
-            return;
-        }
-
-        byte* buffer = stackalloc byte[RawInputBufferBytes];
-        uint headerSize = (uint)sizeof(RAWINPUTHEADER);
-
-        while (_alive)
-        {
-            PInvoke.DwmFlush(); // block until next compose pass (~vsync)
-            if (!_alive) break;
-
-            bool hadInput = false;
-            while (true)
-            {
-                uint size = RawInputBufferBytes;
-                uint count = PInvoke.GetRawInputBuffer((RAWINPUT*)buffer, ref size, headerSize);
-                if (count == 0 || count == unchecked((uint)-1))
-                    break;
-
-                RAWINPUT* raw = (RAWINPUT*)buffer;
-                for (uint i = 0; i < count; i++)
-                {
-                    if (raw->header.dwType == (uint)RID_DEVICE_INFO_TYPE.RIM_TYPEMOUSE)
-                    {
-                        OnRawMouse(ref raw->data.mouse);
-                        hadInput = true;
-                    }
-                    raw = NextBlock(raw);
-                }
-            }
-
-            if (hadInput)
-                _uiContext.Post(_uiPost, null);
-        }
+        if (PInvoke.RegisterRawInputDevices(&rid, 1, (uint)sizeof(RAWINPUTDEVICE)))
+            return true;
 
         _sink.DestroyHandle();
+        return false;
+    }
+
+    /// <summary>
+    /// Block until raw input arrives or shutdown is signaled. Returns true if
+    /// the wake was triggered by raw input (caller should drain), false on
+    /// shutdown / wait failure (caller should exit the loop).
+    /// </summary>
+    private unsafe bool WaitForInput(HANDLE shutdown)
+    {
+        HANDLE* handles = stackalloc HANDLE[1];
+        handles[0] = shutdown;
+        uint result = (uint)PInvoke.MsgWaitForMultipleObjects(
+            1, handles, false, INFINITE, QUEUE_STATUS_FLAGS.QS_RAWINPUT);
+        return result != WAIT_OBJECT_0 && result != WAIT_FAILED;
+    }
+
+    /// <summary>
+    /// Drain everything in the raw input queue into <see cref="OnRawMouse"/>.
+    /// Grows the buffer on <c>ERROR_INSUFFICIENT_BUFFER</c> instead of
+    /// dropping events — see the field-level comment for why that matters.
+    /// Returns true if at least one mouse event was processed.
+    /// </summary>
+    private unsafe bool DrainInput(ref IntPtr buffer, ref int bufferBytes)
+    {
+        uint headerSize = (uint)sizeof(RAWINPUTHEADER);
+        bool hadInput = false;
+        while (true)
+        {
+            uint size = (uint)bufferBytes;
+            uint count = PInvoke.GetRawInputBuffer((RAWINPUT*)buffer, ref size, headerSize);
+            if (count == 0) break;
+            if (count == unchecked((uint)-1))
+            {
+                if (Marshal.GetLastWin32Error() != ERROR_INSUFFICIENT_BUFFER) break;
+                // size now holds the required size for at least one event;
+                // double it so we don't grow on every burst.
+                int needed = Math.Max((int)size * 2, bufferBytes * 2);
+                buffer = Marshal.ReAllocHGlobal(buffer, (IntPtr)needed);
+                bufferBytes = needed;
+                continue;
+            }
+
+            long ts = Stopwatch.GetTimestamp();
+            RAWINPUT* raw = (RAWINPUT*)buffer;
+            for (uint i = 0; i < count; i++)
+            {
+                if (raw->header.dwType == (uint)RID_DEVICE_INFO_TYPE.RIM_TYPEMOUSE)
+                {
+                    OnRawMouse(ref raw->data.mouse, ts);
+                    hadInput = true;
+                }
+                raw = NextBlock(raw);
+            }
+        }
+        return hadInput;
     }
 
     /// <summary>NEXTRAWINPUTBLOCK: advance by header.dwSize, aligned to IntPtr.Size.</summary>
@@ -158,26 +242,33 @@ internal sealed class RawMouseInput : IDisposable
         return (RAWINPUT*)((next + alignMask) & ~alignMask);
     }
 
-    private void OnRawMouse(ref RAWMOUSE mouse)
+    private void OnRawMouse(ref RAWMOUSE mouse, long ts)
     {
         if (!Enabled) return;
 
         ushort btn = mouse.Anonymous.Anonymous.usButtonFlags;
 
         if ((btn & PInvoke.RI_MOUSE_MIDDLE_BUTTON_DOWN) != 0)
-            OnMiddleDown();
+            OnMiddleDown(ts);
         if ((btn & PInvoke.RI_MOUSE_MIDDLE_BUTTON_UP) != 0)
-            OnMiddleUp();
+            OnMiddleUp(ts);
         if ((btn & (PInvoke.RI_MOUSE_LEFT_BUTTON_DOWN | PInvoke.RI_MOUSE_RIGHT_BUTTON_DOWN)) != 0)
-            Events.TryEnqueue(new MouseEvent(MouseEventType.ButtonDown));
+            Events.TryEnqueue(new MouseEvent(MouseEventType.ButtonDown, timestamp: ts));
         if ((btn & PInvoke.RI_MOUSE_WHEEL) != 0)
-            OnWheel();
+            OnWheel(ts);
 
         if (_dragging && (mouse.lLastX != 0 || mouse.lLastY != 0))
-            Events.TryEnqueue(new MouseEvent(MouseEventType.Pan, mouse.lLastX, mouse.lLastY));
+        {
+            int dx = mouse.lLastX;
+            int dy = mouse.lLastY;
+            if (_curve != null)
+                _curve.Apply(dx, dy, out dx, out dy);
+            if (dx != 0 || dy != 0)
+                Events.TryEnqueue(new MouseEvent(MouseEventType.Pan, dx, dy, ts));
+        }
     }
 
-    private void OnMiddleDown()
+    private void OnMiddleDown(long ts)
     {
         Point pt = GetCursor();
         bool alt = !_config.DisableAltPan
@@ -188,26 +279,30 @@ internal sealed class RawMouseInput : IDisposable
         {
             _dragging = true;
             _altDrag = alt;
-            Events.TryEnqueue(new MouseEvent(MouseEventType.DragStarted));
+            Events.TryEnqueue(new MouseEvent(MouseEventType.DragStarted, timestamp: ts));
         }
         else
         {
-            Events.TryEnqueue(new MouseEvent(MouseEventType.ButtonDown));
+            Events.TryEnqueue(new MouseEvent(MouseEventType.ButtonDown, timestamp: ts));
         }
     }
 
-    private void OnMiddleUp()
+    private void OnMiddleUp(long ts)
     {
         if (!_dragging) return;
         _dragging = false;
-        Events.TryEnqueue(new MouseEvent(MouseEventType.DragEnded));
+        // Curve scaler accumulates last-band + sub-pixel state across events.
+        // Carrying that into the next drag gives it a different scale than the
+        // first drag started with — pan diverges from cursor on drag 2+.
+        _curve?.ResetGestureState();
+        Events.TryEnqueue(new MouseEvent(MouseEventType.DragEnded, timestamp: ts));
     }
 
-    private void OnWheel()
+    private void OnWheel(long ts)
     {
         bool alt = IsAltDown() && !IsCtrlDown() && !IsShiftDown();
         if (alt && IsDesktopOrTaskbarAt(GetCursor()))
-            Events.TryEnqueue(new MouseEvent(MouseEventType.Zoom));
+            Events.TryEnqueue(new MouseEvent(MouseEventType.Zoom, timestamp: ts));
     }
 
     // ==================== HELPERS ====================

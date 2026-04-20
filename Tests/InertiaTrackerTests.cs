@@ -30,7 +30,7 @@ public class InertiaTrackerTests
         var clock = new FakeClock();
         var tracker = new InertiaTracker(clock);
 
-        // 10px every 16ms → ~0.625 px/ms, well above 0.02 stop threshold
+        // 10px every 16ms -> ~0.625 px/ms, well above 0.02 stop threshold
         for (int i = 0; i < 5; i++)
         {
             tracker.RecordDelta(10, 5);
@@ -62,7 +62,7 @@ public class InertiaTrackerTests
         var clock = new FakeClock();
         var tracker = new InertiaTracker(clock);
 
-        // 1px every 100ms → 0.01 px/ms, below 0.02 stop threshold
+        // 1px every 100ms -> 0.01 px/ms, below 0.02 stop threshold
         tracker.RecordDelta(1, 0);
         clock.Advance(100);
         tracker.RecordDelta(1, 0);

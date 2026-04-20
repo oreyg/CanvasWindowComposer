@@ -217,7 +217,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
     /// <summary>Single entry point for every mode change.</summary>
     public void TransitionTo(OverviewMode target, bool syncCameraOnClose = true)
     {
-        _inertia.Cancel();
+        CancelInertia();
 
         OverviewMode from = CurrentMode;
         if (!_state.SetMode(target)) return;

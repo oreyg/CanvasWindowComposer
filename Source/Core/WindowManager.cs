@@ -52,7 +52,7 @@ internal sealed class WindowManager : IDisposable
     /// While true, <see cref="Reconcile"/> and <see cref="ReconcileWindow"/>
     /// short-circuit and only flag that a reconcile was requested. Set by the
     /// overview lifecycle so our own reprojections don't feed back through
-    /// WindowMoved → Reconcile and overwrite canvas world coords with
+    /// WindowMoved -> Reconcile and overwrite canvas world coords with
     /// rounding-drifted screen coords. When flipped back to false, if any
     /// reconcile call was suppressed during the on period, a full
     /// <see cref="Reconcile"/> runs to catch up on any drift.

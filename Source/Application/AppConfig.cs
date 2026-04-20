@@ -14,6 +14,16 @@ internal interface IAppConfig
     bool DisableAltPan { get; }
     bool DisableGreedyDraw { get; }
     bool DisableDllInjection { get; }
+
+    /// <summary>
+    /// When false (default), raw mouse deltas are passed through Windows'
+    /// pointer acceleration curve before being applied to the canvas, so pan
+    /// speed matches cursor speed and the cursor stays anchored to the same
+    /// pixel of any window thumbnail under it. When true, raw HID deltas go
+    /// to the canvas directly (1 mouse count = 1 canvas pixel) — useful if
+    /// you've turned off "Enhance pointer precision" and want truly linear pan.
+    /// </summary>
+    bool DisableMouseCurve { get; }
 }
 
 /// <summary>
@@ -37,6 +47,7 @@ internal sealed class AppConfig : IAppConfig
     public bool DisableAltPan { get; private set; }
     public bool DisableGreedyDraw { get; private set; }
     public bool DisableDllInjection { get; private set; }
+    public bool DisableMouseCurve { get; private set; }
 
     public AppConfig(IClock? clock = null)
     {
@@ -57,6 +68,7 @@ internal sealed class AppConfig : IAppConfig
         DisableAltPan = GetBool(values, "DisableAltPan");
         DisableGreedyDraw = GetBool(values, "DisableGreedyDraw");
         DisableDllInjection = GetBool(values, "DisableDllInjection");
+        DisableMouseCurve = GetBool(values, "DisableMouseCurve");
     }
 
     /// <summary>Watch config.ini for changes and reload automatically.</summary>
@@ -89,20 +101,25 @@ internal sealed class AppConfig : IAppConfig
         Directory.CreateDirectory(ConfigDir);
         File.WriteAllText(ConfigPath,
 @"[CanvasWindowComposer]
-; Set to true to disable features
+; All flags below are commented out and set to their default values.
+; Uncomment a line and flip to true to opt out of the feature.
 
 ; Disable Alt+S window search
-DisableSearch=false
+;DisableSearch=false
 
 ; Disable Alt+middle-click pan over windows
-DisableAltPan=false
+;DisableAltPan=false
 
 ; Disable SetWindowRgn clipping for off-screen windows
 ; Retains Alt-Tab and taskbar thumbnails at expense of performance
-DisableGreedyDraw=false
+;DisableGreedyDraw=false
 
 ; Disable DLL injection into managed windows
-DisableDllInjection=false
+;DisableDllInjection=false
+
+; Disable Windows pointer acceleration curve on pan deltas
+; (default off = curve on, pan tracks cursor; on = raw HID deltas)
+;DisableMouseCurve=false
 ");
     }
 

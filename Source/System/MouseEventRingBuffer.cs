@@ -17,11 +17,19 @@ internal readonly struct MouseEvent
     public readonly int Dx;
     public readonly int Dy;
 
-    public MouseEvent(MouseEventType type, int dx = 0, int dy = 0)
+    /// <summary>
+    /// Stopwatch.GetTimestamp() ticks at the moment the event was parsed off
+    /// the raw-input buffer. Per-event so consumers (e.g. inertia velocity
+    /// computation) can reconstruct sub-frame timing across a drain burst.
+    /// </summary>
+    public readonly long Timestamp;
+
+    public MouseEvent(MouseEventType type, int dx = 0, int dy = 0, long timestamp = 0)
     {
         Type = type;
         Dx = dx;
         Dy = dy;
+        Timestamp = timestamp;
     }
 }
 

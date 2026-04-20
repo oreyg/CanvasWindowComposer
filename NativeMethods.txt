@@ -16,6 +16,18 @@ RI_MOUSE_WHEEL
 // One-shot: resolve click location at drag-start
 GetCursorPos
 
+// Raw input thread wait
+MsgWaitForMultipleObjects
+QUEUE_STATUS_FLAGS
+
+// Process info
+GetCurrentProcess
+IsWow64Process
+
+// System metrics (mouse curve)
+SystemParametersInfoW
+SYSTEM_PARAMETERS_INFO_ACTION
+
 // Module
 GetModuleHandle
 
