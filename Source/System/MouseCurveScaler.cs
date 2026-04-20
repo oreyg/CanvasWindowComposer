@@ -90,43 +90,50 @@ internal sealed class MouseCurveScaler
     /// Transform raw HID deltas into screen-space deltas matching the cursor.
     /// Whole-pixel output; sub-pixel fractions carried in <see cref="_residualX"/> /
     /// <see cref="_residualY"/> for the next call.
+    ///
+    /// <paramref name="chunks"/> is how many native HID polls this event is
+    /// estimated to represent. Caller derives it from the time gap since the
+    /// previous event. Windows applies its curve per-HID-poll, so when the OS
+    /// coalesces several per-tick reports into one event with a summed lLastX,
+    /// applying the curve once to that big delta lands it in a high-speed band
+    /// and over-amplifies vs. the cursor (which got modest per-tick amplification
+    /// repeated). Splitting the delta into <paramref name="chunks"/> equal sub-
+    /// events and applying the curve per sub-event mirrors what Windows did to
+    /// the cursor. Pass <c>1</c> for genuinely-fast events (no coalescing) so
+    /// the curve fully amplifies as Windows would have.
     /// </summary>
-    /// <remarks>
-    /// Windows applies its cursor curve per-HID-report (per ~1ms poll). Under
-    /// load, raw input messages can be coalesced — multiple per-report deltas
-    /// summed into a single event with a large lLastX. If we apply the curve
-    /// to that coalesced delta directly, it lands in the high-speed band of
-    /// the curve and amplifies aggressively, while Windows applied modest
-    /// per-tick amplification to each individual report. Net: our pan ends
-    /// up larger than the cursor's screen-pixel motion (perceived 2x pan).
-    /// To match the cursor: chunk the raw delta into 1-unit sub-events and
-    /// apply the curve per-chunk, mirroring Windows' per-tick behavior.
-    /// </remarks>
-    public void Apply(int rawDx, int rawDy, out int outDx, out int outDy)
+    public void Apply(int rawDx, int rawDy, int chunks, out int outDx, out int outDy)
     {
         int absDx = Math.Abs(rawDx);
         int absDy = Math.Abs(rawDy);
-        int chunks = Math.Max(absDx, absDy);
-        if (chunks == 0)
+        int dominant = Math.Max(absDx, absDy);
+        if (dominant == 0)
         {
             outDx = 0;
             outDy = 0;
             return;
         }
 
+        // Splitting finer than 1 unit per chunk doesn't help — sub-pixel chunks
+        // all land in band 0 anyway. Cap to the dominant-axis magnitude.
+        int n = Math.Max(1, Math.Min(chunks, dominant));
+        if (n == 1)
+        {
+            ApplySingle(rawDx, rawDy, out outDx, out outDy);
+            return;
+        }
+
         int signX = Math.Sign(rawDx);
         int signY = Math.Sign(rawDy);
-        int errX = 0, errY = 0;
+        int dxPer = absDx / n, dxRem = absDx % n;
+        int dyPer = absDy / n, dyRem = absDy % n;
+
         outDx = 0;
         outDy = 0;
-        for (int i = 0; i < chunks; i++)
+        for (int i = 0; i < n; i++)
         {
-            int cx = 0, cy = 0;
-            errX += absDx;
-            if (errX >= chunks) { errX -= chunks; cx = signX; }
-            errY += absDy;
-            if (errY >= chunks) { errY -= chunks; cy = signY; }
-
+            int cx = (dxPer + (i < dxRem ? 1 : 0)) * signX;
+            int cy = (dyPer + (i < dyRem ? 1 : 0)) * signY;
             ApplySingle(cx, cy, out int oDx, out int oDy);
             outDx += oDx;
             outDy += oDy;

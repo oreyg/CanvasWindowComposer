@@ -15,6 +15,7 @@ namespace CanvasDesktop;
 internal sealed class RawMouseInput : IDisposable
 {
     private const int KeyStateDownBit = 0x8000;
+
     // Initial buffer size — grown on demand if a wake brings more events than fit.
     // Without growth, GetRawInputBuffer returns ERROR_INSUFFICIENT_BUFFER and we
     // can't drain. The OS then coalesces queued WM_INPUT messages, summing per-
@@ -54,6 +55,20 @@ internal sealed class RawMouseInput : IDisposable
     // Drag state — polling thread only
     private bool _dragging;
     private bool _altDrag;
+    // Timestamp of the previous raw motion event in this drag, used to estimate
+    // how many native HID polls a coalesced event represents.
+    private long _lastMotionTicks;
+    // Cap on chunks per event so a long idle-then-burst doesn't flood the curve
+    // with hundreds of sub-events that all land in band 0 anyway.
+    private const int MaxCurveChunks = 50;
+    // Default poll interval if a device reports dwSampleRate=0 (HID drivers
+    // sometimes do this). 1ms matches the typical 1000Hz USB mouse.
+    private const double DefaultPollIntervalMs = 1.0;
+    private static readonly double TicksPerMs = Stopwatch.Frequency / 1000.0;
+    // Per-device cached poll interval (ms-per-HID-report) read from
+    // RID_DEVICE_INFO_MOUSE.dwSampleRate. Only ever read/written on the
+    // polling thread.
+    private readonly Dictionary<IntPtr, double> _pollIntervalByDevice = new();
 
     private Thread? _thread;
     private NativeWindow? _sink;
@@ -88,7 +103,11 @@ internal sealed class RawMouseInput : IDisposable
         _thread = new Thread(ThreadProc)
         {
             IsBackground = true,
-            Name = "RawMouseInput"
+            Name = "RawMouseInput",
+            // High priority keeps the polling thread scheduled even when the UI
+            // thread is busy (inertia + thumbnail updates), reducing the chance
+            // that the OS coalesces queued WM_INPUT into coarse summed events.
+            Priority = ThreadPriority.Highest,
         };
         _thread.Start();
         if (!_started.Wait(TimeSpan.FromSeconds(2)))
@@ -225,7 +244,7 @@ internal sealed class RawMouseInput : IDisposable
             {
                 if (raw->header.dwType == (uint)RID_DEVICE_INFO_TYPE.RIM_TYPEMOUSE)
                 {
-                    OnRawMouse(ref raw->data.mouse, ts);
+                    OnRawMouse(ref raw->data.mouse, raw->header.hDevice, ts);
                     hadInput = true;
                 }
                 raw = NextBlock(raw);
@@ -242,7 +261,7 @@ internal sealed class RawMouseInput : IDisposable
         return (RAWINPUT*)((next + alignMask) & ~alignMask);
     }
 
-    private void OnRawMouse(ref RAWMOUSE mouse, long ts)
+    private void OnRawMouse(ref RAWMOUSE mouse, IntPtr hDevice, long ts)
     {
         if (!Enabled) return;
 
@@ -262,7 +281,19 @@ internal sealed class RawMouseInput : IDisposable
             int dx = mouse.lLastX;
             int dy = mouse.lLastY;
             if (_curve != null)
-                _curve.Apply(dx, dy, out dx, out dy);
+            {
+                // Estimate native HID polls represented: gap_ms / poll_interval.
+                // Per-device interval is queried lazily from the HID driver
+                // (RID_DEVICE_INFO_MOUSE.dwSampleRate). A bigger ratio means
+                // the OS coalesced multiple per-tick reports into one event
+                // with a summed lLastX; passing the chunk count lets the curve
+                // amplify per-tick the way Windows did to the cursor.
+                double gapMs = (ts - _lastMotionTicks) / TicksPerMs;
+                double pollMs = GetPollIntervalMs(hDevice);
+                int chunks = Math.Clamp((int)Math.Round(gapMs / pollMs), 1, MaxCurveChunks);
+                _curve.Apply(dx, dy, chunks, out dx, out dy);
+            }
+            _lastMotionTicks = ts;
             if (dx != 0 || dy != 0)
                 Events.TryEnqueue(new MouseEvent(MouseEventType.Pan, dx, dy, ts));
         }
@@ -279,6 +310,9 @@ internal sealed class RawMouseInput : IDisposable
         {
             _dragging = true;
             _altDrag = alt;
+            // Seed gap so the first motion event computes chunks=1, not a huge
+            // value derived from the time since the previous drag.
+            _lastMotionTicks = ts;
             Events.TryEnqueue(new MouseEvent(MouseEventType.DragStarted, timestamp: ts));
         }
         else
@@ -357,5 +391,65 @@ internal sealed class RawMouseInput : IDisposable
             return false;
         string cls = new string(classBuf[..classLen]);
         return cls is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd";
+    }
+
+    // ==================== HID DEVICE INFO ====================
+    //
+    // CsWin32 doesn't surface GetRawInputDeviceInfo / RID_DEVICE_INFO_MOUSE in
+    // the metadata it generates from, so declare them by hand. We only need
+    // dwSampleRate to convert "ms gap between events" into "native HID polls
+    // since last event" for the curve chunking.
+
+    private const uint RIDI_DEVICEINFO = 0x2000000b;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RidDeviceInfoMouse
+    {
+        public uint dwId;
+        public uint dwNumberOfButtons;
+        public uint dwSampleRate;
+        public BOOL fHasHorizontalWheel;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct RidDeviceInfo
+    {
+        [FieldOffset(0)] public uint cbSize;
+        [FieldOffset(4)] public uint dwType;
+        // Union starts at offset 8; only the mouse variant matters for us.
+        [FieldOffset(8)] public RidDeviceInfoMouse mouse;
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "GetRawInputDeviceInfoW", SetLastError = true)]
+    private static extern unsafe uint GetRawInputDeviceInfo(IntPtr hDevice, uint command, void* data, ref uint size);
+
+    /// <summary>
+    /// Returns the polling interval in milliseconds for the given HID device,
+    /// queried (and cached) from <c>RID_DEVICE_INFO_MOUSE.dwSampleRate</c>.
+    /// Falls back to <see cref="DefaultPollIntervalMs"/> if the driver reports
+    /// no rate (some HID stacks return 0).
+    /// </summary>
+    private double GetPollIntervalMs(IntPtr hDevice)
+    {
+        if (_pollIntervalByDevice.TryGetValue(hDevice, out double cached))
+            return cached;
+
+        double intervalMs = DefaultPollIntervalMs;
+        unsafe
+        {
+            RidDeviceInfo info = default;
+            info.cbSize = (uint)sizeof(RidDeviceInfo);
+            uint size = info.cbSize;
+            uint result = GetRawInputDeviceInfo(hDevice, RIDI_DEVICEINFO, &info, ref size);
+            if (result != unchecked((uint)-1) && result != 0
+                && info.dwType == (uint)RID_DEVICE_INFO_TYPE.RIM_TYPEMOUSE
+                && info.mouse.dwSampleRate > 0)
+            {
+                intervalMs = 1000.0 / info.mouse.dwSampleRate;
+            }
+        }
+
+        _pollIntervalByDevice[hDevice] = intervalMs;
+        return intervalMs;
     }
 }
