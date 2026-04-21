@@ -1,13 +1,12 @@
 using System;
-using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
 
 namespace CanvasDesktop;
 
 /// <summary>
-/// One per monitor: a borderless form + D3D11 swap chain + DWM thumbnails.
-/// Owned by OverviewOverlay. All per-form rendering state lives here.
+/// One per monitor: a borderless form + D3D11 swap chain. Thumbnail state
+/// for the pass lives in the shared <see cref="OverviewThumbnails"/>.
 /// </summary>
 internal sealed class OverviewOverlay : Form
 {
@@ -18,12 +17,6 @@ internal sealed class OverviewOverlay : Form
     public int OriginY { get { return Screen.Bounds.Y; } }
 
     public GridRenderer? Grid { get; private set; }
-
-    // Thumbnails owned by this pass. A canvas window that straddles two
-    // monitors is registered on BOTH passes; DWM clips to this form's client area.
-    public readonly List<(IntPtr hWnd, IntPtr thumb, WorldRect world)> Thumbnails = new();
-    public IntPtr DesktopThumb;
-    public readonly List<(IntPtr hwnd, IntPtr thumb)> Taskbars = new();
 
     // Input forwarding callbacks (set by OverviewOverlay coordinator)
     public Action<OverviewOverlay, KeyEventArgs>? OnKey;

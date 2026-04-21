@@ -27,7 +27,6 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
     private const double ExtentsPaddingRatio = 0.1;
     private const double MouseWheelDeltaPerNotch = 120.0;
-    private const byte DesktopOpacityZoomedMin = 30;
 
     private readonly InertiaTracker _inertia = new();
     private readonly object _inertiaQueueLock = new();
@@ -41,14 +40,6 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
     // keeps WM_PAINT / mouse-message dispatch on near-realtime scheduling.
     // Released on Hide.
     private IntPtr _mmcssHandle;
-
-    // Cached shell HWNDs — stable across overview opens, invalidated on display
-    // topology change (where _passes themselves are rebuilt) and self-healing
-    // via IsWindow() guards (explorer.exe restart destroys Progman / WorkerW /
-    // Shell_TrayWnd and recreates them with new handles). Skips ~33ms of
-    // EnumWindows + Progman SendMessage on every overview open after the first.
-    private IntPtr _cachedDesktopWallpaperHwnd;
-    private List<IntPtr>? _cachedTaskbarHwnds;
 
     /// <summary>HWNDs of all monitor forms (for IInputRouter.SetExtraPanSurfaces).</summary>
     public IReadOnlyList<IntPtr> MonitorHandles
@@ -64,6 +55,10 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
     // Shared ordered list of canvas windows shown in the overview
     // (arrow navigation, hit testing). Refreshed on Show.
     private readonly OverviewWindowList _windows;
+
+    // All DWM thumbnail state (desktop + taskbars + per-window). Owned here
+    // so it can reference _passes; OverviewManager only drives lifecycle.
+    private readonly OverviewThumbnails _thumbnails;
 
     // Pan/drag state (virtual-screen coords)
     private bool _panning;
@@ -81,6 +76,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         _screens = screens ?? WinFormsScreens.Instance;
         _camera = new OverviewCamera(_screens);
         _windows = new OverviewWindowList(mainCanvas, win32);
+        _thumbnails = new OverviewThumbnails(_passes, _windows, _camera, _state, _win32, _screens);
 
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
 
@@ -107,8 +103,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
         // Shell HWNDs may have moved (Progman / WorkerW are recreated on some
         // display changes; secondary taskbars come and go with monitors).
-        _cachedDesktopWallpaperHwnd = IntPtr.Zero;
-        _cachedTaskbarHwnds = null;
+        _thumbnails.InvalidateShellCache();
 
         EnsurePasses();
         foreach (var p in _passes)
@@ -216,7 +211,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
         foreach (var p in _passes)
             p.Grid?.UpdateCamera(_camera.X, _camera.Y, _camera.Zoom);
-        UpdateAllThumbnails();
+        _thumbnails.Reconcile();
     }
 
     /// <summary>Single entry point for every mode change.</summary>
@@ -255,12 +250,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         _wm.UnclipAll();
 
         _windows.Refresh();
-        foreach (var p in _passes)
-        {
-            RegisterDesktopThumbnail(p);
-            RegisterWindowThumbnails(p);
-            RegisterTaskbarThumbnails(p);
-        }
+        _thumbnails.Show();
 
         ApplyConfig();
 
@@ -298,13 +288,11 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         _wm.SuspendReconcile = false;
         _wm.SuspendProjection = false;
 
+        _thumbnails.Hide();
         foreach (var p in _passes)
         {
             p.Hide();
             p.SetLayered(false);
-            UnregisterTaskbarThumbnails(p);
-            UnregisterWindowThumbnails(p);
-            UnregisterDesktopThumbnail(p);
         }
         _windows.Clear();
 
@@ -329,188 +317,13 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
             p.SetLayered(wantLayered);
             p.SetClickThrough(!_cfg.InputEnabled);
         }
-        UpdateAllThumbnails();
+        _thumbnails.Reconcile();
 
         // During Zooming, real-window positions don't need to track the camera
         // (click-through is off — clicks land on the overview form, not real
         // windows). Suppressing projection eliminates the worker-job wait at
         // close-time ReprojectSync.
         _wm.SuspendProjection = (CurrentMode == OverviewMode.Zooming);
-    }
-
-    // ==================== THUMBNAILS ====================
-
-    private void RegisterDesktopThumbnail(OverviewOverlay pass)
-    {
-        IntPtr desktopWnd = GetDesktopWallpaperHwnd();
-        if (desktopWnd == IntPtr.Zero) return;
-
-        HRESULT hr = PInvoke.DwmRegisterThumbnail((HWND)pass.Handle, (HWND)desktopWnd, out nint thumb);
-        pass.DesktopThumb = hr.Succeeded ? thumb : IntPtr.Zero;
-    }
-
-    private IntPtr GetDesktopWallpaperHwnd()
-    {
-        if (_cachedDesktopWallpaperHwnd == IntPtr.Zero
-            || !PInvoke.IsWindow((HWND)_cachedDesktopWallpaperHwnd))
-        {
-            _cachedDesktopWallpaperHwnd = FindDesktopWallpaperWindow();
-        }
-        return _cachedDesktopWallpaperHwnd;
-    }
-
-    private void UnregisterDesktopThumbnail(OverviewOverlay pass)
-    {
-        if (pass.DesktopThumb != IntPtr.Zero)
-        {
-            PInvoke.DwmUnregisterThumbnail(pass.DesktopThumb);
-            pass.DesktopThumb = IntPtr.Zero;
-        }
-    }
-
-    private void UpdateDesktopThumbnail(OverviewOverlay pass)
-    {
-        if (pass.DesktopThumb == IntPtr.Zero) return;
-
-        byte opacity = _cfg.DesktopOpacity;
-        if (CurrentMode == OverviewMode.Zooming)
-        {
-            double t = (_camera.Zoom - OverviewCamera.ZoomMin) / (OverviewCamera.ZoomMax - OverviewCamera.ZoomMin);
-            t = Math.Clamp(t, 0.0, 1.0);
-            double min = DesktopOpacityZoomedMin;
-            double max = _cfg.DesktopOpacity;
-            opacity = (byte)(min + (max - min) * t);
-        }
-
-        // WorkerW spans the entire virtual screen. Position this monitor's
-        // slice of it over this form's client area by setting a source rect.
-        var b = pass.Screen.Bounds;
-        var vs = _screens.VirtualScreen;
-        var props = new DWM_THUMBNAIL_PROPERTIES
-        {
-            dwFlags = PInvoke.DWM_TNP_RECTDESTINATION | PInvoke.DWM_TNP_RECTSOURCE |
-                      PInvoke.DWM_TNP_VISIBLE | PInvoke.DWM_TNP_OPACITY,
-            rcDestination = new RECT { left = 0, top = 0, right = b.Width, bottom = b.Height },
-            rcSource = new RECT
-            {
-                left   = b.X - vs.X,
-                top    = b.Y - vs.Y,
-                right  = b.X - vs.X + b.Width,
-                bottom = b.Y - vs.Y + b.Height
-            },
-            fVisible = true,
-            opacity = opacity
-        };
-
-        PInvoke.DwmUpdateThumbnailProperties(pass.DesktopThumb, props);
-    }
-
-    private void RegisterTaskbarThumbnails(OverviewOverlay pass)
-    {
-        foreach (var hwnd in GetTaskbarHwnds())
-            AddTaskbar(pass, (HWND)hwnd);
-    }
-
-    private List<IntPtr> GetTaskbarHwnds()
-    {
-        if (_cachedTaskbarHwnds == null || !AllAlive(_cachedTaskbarHwnds))
-            _cachedTaskbarHwnds = EnumerateTaskbarHwnds();
-        return _cachedTaskbarHwnds;
-    }
-
-    private static bool AllAlive(List<IntPtr> hwnds)
-    {
-        foreach (var h in hwnds)
-        {
-            if (!PInvoke.IsWindow((HWND)h)) return false;
-        }
-        return true;
-    }
-
-    private static unsafe List<IntPtr> EnumerateTaskbarHwnds()
-    {
-        var result = new List<IntPtr>();
-
-        HWND primary = PInvoke.FindWindow("Shell_TrayWnd", null);
-        if (primary != HWND.Null) result.Add(primary);
-
-        WNDENUMPROC proc = (HWND hWnd, LPARAM _) =>
-        {
-            Span<char> buf = stackalloc char[64];
-            int len;
-            fixed (char* p = buf)
-            {
-                len = PInvoke.GetClassName(hWnd, new PWSTR(p), buf.Length);
-            }
-            if (len > 0 && new string(buf[..len]) == "Shell_SecondaryTrayWnd")
-                result.Add(hWnd);
-            return true;
-        };
-        PInvoke.EnumWindows(proc, 0);
-        GC.KeepAlive(proc);
-
-        return result;
-    }
-
-    private static void AddTaskbar(OverviewOverlay pass, HWND hwnd)
-    {
-        HRESULT hr = PInvoke.DwmRegisterThumbnail((HWND)pass.Handle, hwnd, out nint thumb);
-        if (hr.Succeeded) pass.Taskbars.Add((hwnd, thumb));
-    }
-
-    private void UnregisterTaskbarThumbnails(OverviewOverlay pass)
-    {
-        foreach (var (_, thumb) in pass.Taskbars)
-            PInvoke.DwmUnregisterThumbnail(thumb);
-        pass.Taskbars.Clear();
-    }
-
-    private void UpdateTaskbarThumbnails(OverviewOverlay pass)
-    {
-        if (pass.Taskbars.Count == 0) return;
-
-        if (!_cfg.TaskbarVisible)
-        {
-            var hideProps = new DWM_THUMBNAIL_PROPERTIES
-            {
-                dwFlags = PInvoke.DWM_TNP_VISIBLE,
-                fVisible = false
-            };
-            foreach (var (_, thumb) in pass.Taskbars)
-                PInvoke.DwmUpdateThumbnailProperties(thumb, hideProps);
-            return;
-        }
-
-        foreach (var (hwnd, thumb) in pass.Taskbars)
-        {
-            PInvoke.GetWindowRect((HWND)hwnd, out RECT r);
-            var props = new DWM_THUMBNAIL_PROPERTIES
-            {
-                dwFlags = PInvoke.DWM_TNP_RECTDESTINATION | PInvoke.DWM_TNP_VISIBLE | PInvoke.DWM_TNP_OPACITY,
-                rcDestination = new RECT
-                {
-                    left   = r.left   - pass.OriginX,
-                    top    = r.top    - pass.OriginY,
-                    right  = r.right  - pass.OriginX,
-                    bottom = r.bottom - pass.OriginY
-                },
-                fVisible = true,
-                opacity = 255
-            };
-            PInvoke.DwmUpdateThumbnailProperties(thumb, props);
-        }
-    }
-
-    private void RegisterWindowThumbnails(OverviewOverlay pass)
-    {
-        // _windows is topmost-first (EnumWindows order). Register
-        // bottom-to-top so the topmost window's thumbnail draws last (on top).
-        for (int i = _windows.Count - 1; i >= 0; i--)
-        {
-            var entry = _windows.Windows[i];
-            HRESULT hr = PInvoke.DwmRegisterThumbnail((HWND)pass.Handle, (HWND)entry.HWnd, out nint thumb);
-            if (hr.Succeeded) pass.Thumbnails.Add((entry.HWnd, thumb, entry.World));
-        }
     }
 
     /// <summary>
@@ -528,80 +341,8 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         PInvoke.SetWindowPos((HWND)hWnd, HWND.Null, 0, 0, 0, 0,
             SET_WINDOW_POS_FLAGS.SWP_NOMOVE | SET_WINDOW_POS_FLAGS.SWP_NOSIZE | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE);
 
-        // Re-register the window's thumbnail on every pass so it draws last (on top).
-        foreach (var pass in _passes)
-        {
-            int idx = -1;
-            WorldRect world = default;
-            for (int i = 0; i < pass.Thumbnails.Count; i++)
-            {
-                if (pass.Thumbnails[i].hWnd == hWnd)
-                {
-                    idx = i;
-                    world = pass.Thumbnails[i].world;
-                    PInvoke.DwmUnregisterThumbnail(pass.Thumbnails[i].thumb);
-                    break;
-                }
-            }
-            if (idx < 0) continue;
-
-            pass.Thumbnails.RemoveAt(idx);
-
-            HRESULT hr = PInvoke.DwmRegisterThumbnail((HWND)pass.Handle, (HWND)hWnd, out nint newThumb);
-            if (hr.Succeeded)
-                pass.Thumbnails.Add((hWnd, newThumb, world));
-        }
-
-        UpdateAllThumbnails();
-    }
-
-    private void UnregisterWindowThumbnails(OverviewOverlay pass)
-    {
-        foreach (var (_, thumb, _) in pass.Thumbnails)
-            PInvoke.DwmUnregisterThumbnail(thumb);
-        pass.Thumbnails.Clear();
-    }
-
-    private void UpdateAllThumbnails()
-    {
-        foreach (var p in _passes)
-        {
-            UpdateDesktopThumbnail(p);
-            UpdateTaskbarThumbnails(p);
-            UpdateWindowThumbnails(p);
-        }
-    }
-
-    private void UpdateWindowThumbnails(OverviewOverlay pass)
-    {
-        double zoom = _camera.Zoom;
-        foreach (var (hWnd, thumb, world) in pass.Thumbnails)
-        {
-            int sx = (int)((world.X - _camera.X) * zoom);
-            int sy = (int)((world.Y - _camera.Y) * zoom);
-            int sw = Math.Max(1, (int)(world.W * zoom));
-            int sh = Math.Max(1, (int)(world.H * zoom));
-
-            var (iL, iT, iR, iB) = _win32.GetFrameInset(hWnd);
-            int fL = (int)(iL * zoom);
-            int fT = (int)(iT * zoom);
-            int fR = (int)(iR * zoom);
-            int fB = (int)(iB * zoom);
-
-            int left   = sx + fL - pass.OriginX;
-            int top    = sy + fT - pass.OriginY;
-            int right  = sx + sw - fR - pass.OriginX;
-            int bottom = sy + sh - fB - pass.OriginY;
-
-            var props = new DWM_THUMBNAIL_PROPERTIES
-            {
-                dwFlags = PInvoke.DWM_TNP_RECTDESTINATION | PInvoke.DWM_TNP_VISIBLE | PInvoke.DWM_TNP_OPACITY,
-                rcDestination = new RECT { left = left, top = top, right = right, bottom = bottom },
-                fVisible = true,
-                opacity = 255
-            };
-            PInvoke.DwmUpdateThumbnailProperties(thumb, props);
-        }
+        _thumbnails.BringToFront(hWnd);
+        _thumbnails.Reconcile();
     }
 
     // ==================== INPUT ====================
@@ -649,7 +390,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
         foreach (var p in _passes)
             p.Grid?.UpdateCamera(_camera.X, _camera.Y, _camera.Zoom);
-        UpdateAllThumbnails();
+        _thumbnails.Reconcile();
     }
 
     private void HandleMouseDown(OverviewOverlay pass, MouseEventArgs e)
@@ -705,23 +446,10 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
             _windows.TranslateAt(_dragIndex, dx, dy);
             var entry = _windows.Windows[_dragIndex];
-
-            // Update each pass's matching thumbnail world rect too
-            foreach (var p in _passes)
-            {
-                for (int i = 0; i < p.Thumbnails.Count; i++)
-                {
-                    var (thHwnd, thThumb, thWorld) = p.Thumbnails[i];
-                    if (thHwnd == entry.HWnd)
-                    {
-                        thWorld.X = entry.World.X; thWorld.Y = entry.World.Y;
-                        p.Thumbnails[i] = (thHwnd, thThumb, thWorld);
-                    }
-                }
-            }
+            _thumbnails.UpdateWorldRect(entry.HWnd, entry.World);
 
             _mainCanvas.SetWindow(entry.HWnd, entry.World.X, entry.World.Y, entry.World.W, entry.World.H);
-            UpdateAllThumbnails();
+            _thumbnails.Reconcile();
         }
         else if (_panning)
         {
@@ -739,7 +467,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
                 p.Grid?.AccumulatePan(worldDx, worldDy);
                 p.Grid?.UpdateCamera(_camera.X, _camera.Y, _camera.Zoom);
             }
-            UpdateAllThumbnails();
+            _thumbnails.Reconcile();
         }
     }
 
@@ -767,7 +495,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         foreach (var p in _passes)
             p.Grid?.UpdateCamera(_camera.X, _camera.Y, _camera.Zoom);
 
-        UpdateAllThumbnails();
+        _thumbnails.Reconcile();
     }
 
     private void HandleDoubleClick(OverviewOverlay pass, MouseEventArgs e)
@@ -814,25 +542,4 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         _passes.Clear();
     }
 
-    /// <summary>Find the window that renders the desktop wallpaper.</summary>
-    private static IntPtr FindDesktopWallpaperWindow()
-    {
-        HWND progman = PInvoke.FindWindow("Progman", null);
-        if (progman == HWND.Null) return IntPtr.Zero;
-
-        PInvoke.SendMessage(progman, 0x052C, 0, 0);
-
-        HWND workerW = HWND.Null;
-        WNDENUMPROC proc = (HWND hWnd, LPARAM _) =>
-        {
-            HWND shell = PInvoke.FindWindowEx(hWnd, HWND.Null, "SHELLDLL_DefView", null);
-            if (shell != HWND.Null)
-                workerW = PInvoke.FindWindowEx(HWND.Null, hWnd, "WorkerW", null);
-            return true;
-        };
-        PInvoke.EnumWindows(proc, 0);
-        GC.KeepAlive(proc);
-
-        return workerW != HWND.Null ? workerW : progman;
-    }
 }
