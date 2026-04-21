@@ -17,12 +17,11 @@ internal sealed class OverviewOverlay : Form
     public int OriginX { get { return Screen.Bounds.X; } }
     public int OriginY { get { return Screen.Bounds.Y; } }
 
-    public GridRenderer? Grid { get; private set; }
+    public OverviewRenderer? Renderer { get; private set; }
 
     // Thumbnails owned by this pass. A canvas window that straddles two
     // monitors is registered on BOTH passes; DWM clips to this form's client area.
     public readonly List<(IntPtr hWnd, IntPtr thumb, WorldRect world)> Thumbnails = new();
-    public IntPtr DesktopThumb;
     public readonly List<(IntPtr hwnd, IntPtr thumb)> Taskbars = new();
 
     // Input forwarding callbacks (set by OverviewOverlay coordinator)
@@ -79,13 +78,13 @@ internal sealed class OverviewOverlay : Form
 
         _ = Handle; // force HWND creation
 
-        if (Grid == null)
+        if (Renderer == null)
         {
-            Grid = new GridRenderer();
-            Grid.Initialize(Handle, b.Width, b.Height);
+            Renderer = new OverviewRenderer();
+            Renderer.Initialize(Handle, b.Width, b.Height);
             using (var g = CreateGraphics())
-                Grid.SetDpiScale(g.DpiX / StandardDpi);
-            Grid.StartThread();
+                Renderer.SetDpiScale(g.DpiX / StandardDpi);
+            Renderer.StartThread();
         }
     }
 
@@ -147,8 +146,8 @@ internal sealed class OverviewOverlay : Form
             PInvoke.SetWindowPos((HWND)Handle, HWND.Null, rect.left, rect.top, w, h,
                 SET_WINDOW_POS_FLAGS.SWP_NOZORDER | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE);
 
-            Grid?.Resize(w, h);
-            Grid?.SetDpiScale(dpi / StandardDpi);
+            Renderer?.Resize(w, h);
+            Renderer?.SetDpiScale(dpi / StandardDpi);
 
             m.Result = IntPtr.Zero;
             return;
@@ -165,7 +164,7 @@ internal sealed class OverviewOverlay : Form
             return;
         }
 
-        Grid?.Dispose();
-        Grid = null;
+        Renderer?.Dispose();
+        Renderer = null;
     }
 }

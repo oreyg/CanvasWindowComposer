@@ -99,7 +99,7 @@
 | `Overlays/OverviewManager.cs` | 845 lines, state machine + camera math + thumbnails in one class, `SystemInformation.VirtualScreen` hardcoded |
 | `Overlays/OverviewOverlay.cs` | Form subclass, WndProc overhead, can't test rendering without HWND |
 | `Overlays/SearchOverlay.cs` | Form subclass, text input + list rendering tied to WinForms |
-| `Overlays/GridRenderer.cs` | D3D11 device + swap chain + shader bytecode — integration-test only |
+| `Overlays/OverviewRenderer.cs` | D3D11 device + swap chain + shader bytecode — integration-test only |
 | `Overlays/MinimapOverlay.cs` | Form subclass, GDI+ rendering — projection math hard to isolate |
 
 ## Test coverage gaps
@@ -114,5 +114,5 @@
 - `WindowSearchService.Search` scoring
 - `SearchOverlay` result filtering
 - `MinimapOverlay` projection math
-- `GridRenderer` shader integration
+- `OverviewRenderer` shader integration
 - `AppConfig` reload + file watching

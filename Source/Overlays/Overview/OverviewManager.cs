@@ -215,7 +215,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         _camera.SyncFrom(_mainCanvas);
 
         foreach (var p in _passes)
-            p.Grid?.UpdateCamera(_camera.X, _camera.Y, _camera.Zoom);
+            p.Renderer?.UpdateCamera(_camera.X, _camera.Y, _camera.Zoom);
         UpdateAllThumbnails();
     }
 
@@ -271,19 +271,19 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         if (_passes.Count > 0) _passes[0].Activate();
 
         // Attach frame tick to the first pass's grid (drives inertia)
-        if (_passes.Count > 0 && _passes[0].Grid != null)
-            _passes[0].Grid!.OnFrameTick = OnGridFrameTick;
+        if (_passes.Count > 0 && _passes[0].Renderer != null)
+            _passes[0].Renderer!.OnFrameTick = OnGridFrameTick;
 
         foreach (var p in _passes)
-            p.Grid?.Start(_camera.X, _camera.Y, _camera.Zoom);
+            p.Renderer?.Start(_camera.X, _camera.Y, _camera.Zoom);
     }
 
     private void HideInternal(bool syncCamera)
     {
         foreach (var p in _passes)
         {
-            if (p.Grid != null) p.Grid.OnFrameTick = null;
-            p.Grid?.Stop();
+            if (p.Renderer != null) p.Renderer.OnFrameTick = null;
+            p.Renderer?.Stop();
         }
 
         if (syncCamera)
@@ -325,7 +325,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         bool wantLayered = (CurrentMode == OverviewMode.Panning);
         foreach (var p in _passes)
         {
-            if (p.Grid != null) p.Grid.DrawGrid = _cfg.GridVisible;
+            if (p.Renderer != null) p.Renderer.DrawGrid = _cfg.GridVisible;
             p.SetLayered(wantLayered);
             p.SetClickThrough(!_cfg.InputEnabled);
         }
@@ -344,9 +344,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
     {
         IntPtr desktopWnd = GetDesktopWallpaperHwnd();
         if (desktopWnd == IntPtr.Zero) return;
-
-        HRESULT hr = PInvoke.DwmRegisterThumbnail((HWND)pass.Handle, (HWND)desktopWnd, out nint thumb);
-        pass.DesktopThumb = hr.Succeeded ? thumb : IntPtr.Zero;
+        pass.Renderer?.RegisterDesktopWindow(desktopWnd);
     }
 
     private IntPtr GetDesktopWallpaperHwnd()
@@ -361,17 +359,11 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
     private void UnregisterDesktopThumbnail(OverviewOverlay pass)
     {
-        if (pass.DesktopThumb != IntPtr.Zero)
-        {
-            PInvoke.DwmUnregisterThumbnail(pass.DesktopThumb);
-            pass.DesktopThumb = IntPtr.Zero;
-        }
+        pass.Renderer?.UnregisterDesktopWindow();
     }
 
     private void UpdateDesktopThumbnail(OverviewOverlay pass)
     {
-        if (pass.DesktopThumb == IntPtr.Zero) return;
-
         byte opacity = _cfg.DesktopOpacity;
         if (CurrentMode == OverviewMode.Zooming)
         {
@@ -382,27 +374,16 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
             opacity = (byte)(min + (max - min) * t);
         }
 
-        // WorkerW spans the entire virtual screen. Position this monitor's
-        // slice of it over this form's client area by setting a source rect.
+        // WorkerW spans the entire virtual screen. Tell the renderer which
+        // slice of it corresponds to this monitor in UV space; the shader
+        // samples that sub-rect and multiplies by opacity.
         var b = pass.Screen.Bounds;
         var vs = _screens.VirtualScreen;
-        var props = new DWM_THUMBNAIL_PROPERTIES
-        {
-            dwFlags = PInvoke.DWM_TNP_RECTDESTINATION | PInvoke.DWM_TNP_RECTSOURCE |
-                      PInvoke.DWM_TNP_VISIBLE | PInvoke.DWM_TNP_OPACITY,
-            rcDestination = new RECT { left = 0, top = 0, right = b.Width, bottom = b.Height },
-            rcSource = new RECT
-            {
-                left   = b.X - vs.X,
-                top    = b.Y - vs.Y,
-                right  = b.X - vs.X + b.Width,
-                bottom = b.Y - vs.Y + b.Height
-            },
-            fVisible = true,
-            opacity = opacity
-        };
-
-        PInvoke.DwmUpdateThumbnailProperties(pass.DesktopThumb, props);
+        float uvL = (float)(b.X - vs.X) / vs.Width;
+        float uvT = (float)(b.Y - vs.Y) / vs.Height;
+        float uvR = (float)(b.X - vs.X + b.Width) / vs.Width;
+        float uvB = (float)(b.Y - vs.Y + b.Height) / vs.Height;
+        pass.Renderer?.SetDesktopParams(uvL, uvT, uvR, uvB, opacity / 255f);
     }
 
     private void RegisterTaskbarThumbnails(OverviewOverlay pass)
@@ -510,6 +491,8 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
             var entry = _windows.Windows[i];
             HRESULT hr = PInvoke.DwmRegisterThumbnail((HWND)pass.Handle, (HWND)entry.HWnd, out nint thumb);
             if (hr.Succeeded) pass.Thumbnails.Add((entry.HWnd, thumb, entry.World));
+            // WGC capture session for this HWND on the pass's D3D device.
+            pass.Renderer?.RegisterCaptureWindow(entry.HWnd);
         }
     }
 
@@ -557,8 +540,11 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
     private void UnregisterWindowThumbnails(OverviewOverlay pass)
     {
-        foreach (var (_, thumb, _) in pass.Thumbnails)
+        foreach (var (hWnd, thumb, _) in pass.Thumbnails)
+        {
             PInvoke.DwmUnregisterThumbnail(thumb);
+            pass.Renderer?.UnregisterCaptureWindow(hWnd);
+        }
         pass.Thumbnails.Clear();
     }
 
@@ -575,6 +561,10 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
     private void UpdateWindowThumbnails(OverviewOverlay pass)
     {
         double zoom = _camera.Zoom;
+        int instanceCount = 0;
+        Span<ThumbnailPass.Instance> instances = _thumbInstanceScratch;
+        Span<IntPtr> hwnds = _thumbHwndScratch;
+
         foreach (var (hWnd, thumb, world) in pass.Thumbnails)
         {
             int sx = (int)((world.X - _camera.X) * zoom);
@@ -597,12 +587,36 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
             {
                 dwFlags = PInvoke.DWM_TNP_RECTDESTINATION | PInvoke.DWM_TNP_VISIBLE | PInvoke.DWM_TNP_OPACITY,
                 rcDestination = new RECT { left = left, top = top, right = right, bottom = bottom },
-                fVisible = true,
+                fVisible = false, // TEMP: hidden so only the WGC shader pass is visible
                 opacity = 255
             };
             PInvoke.DwmUpdateThumbnailProperties(thumb, props);
+
+            // Mirror the DWM thumbnail rect (inset-adjusted) into the shader
+            // instance buffer. WGC-sampled texture fills this rect; if capture
+            // hasn't delivered a frame yet the shader skips drawing and the
+            // DWM thumbnail underneath shows through as a fallback.
+            if (instanceCount < instances.Length)
+            {
+                instances[instanceCount] = new ThumbnailPass.Instance
+                {
+                    Left = left,
+                    Top = top,
+                    Right = right,
+                    Bottom = bottom
+                };
+                hwnds[instanceCount] = hWnd;
+                instanceCount++;
+            }
         }
+
+        pass.Renderer?.SetThumbnailInstances(instances[..instanceCount], hwnds[..instanceCount]);
     }
+
+    // Reused across passes; size matches ThumbnailPass.MaxThumbnails.
+    private readonly ThumbnailPass.Instance[] _thumbInstanceScratch
+        = new ThumbnailPass.Instance[ThumbnailPass.MaxThumbnails];
+    private readonly IntPtr[] _thumbHwndScratch = new IntPtr[ThumbnailPass.MaxThumbnails];
 
     // ==================== INPUT ====================
 
@@ -648,7 +662,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         _camera.CenterOnWorld(world.X, world.Y, world.W, world.H);
 
         foreach (var p in _passes)
-            p.Grid?.UpdateCamera(_camera.X, _camera.Y, _camera.Zoom);
+            p.Renderer?.UpdateCamera(_camera.X, _camera.Y, _camera.Zoom);
         UpdateAllThumbnails();
     }
 
@@ -736,8 +750,8 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
             foreach (var p in _passes)
             {
-                p.Grid?.AccumulatePan(worldDx, worldDy);
-                p.Grid?.UpdateCamera(_camera.X, _camera.Y, _camera.Zoom);
+                p.Renderer?.AccumulatePan(worldDx, worldDy);
+                p.Renderer?.UpdateCamera(_camera.X, _camera.Y, _camera.Zoom);
             }
             UpdateAllThumbnails();
         }
@@ -765,7 +779,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         if (!_camera.ZoomToCursor(vx, vy, notches)) return;
 
         foreach (var p in _passes)
-            p.Grid?.UpdateCamera(_camera.X, _camera.Y, _camera.Zoom);
+            p.Renderer?.UpdateCamera(_camera.X, _camera.Y, _camera.Zoom);
 
         UpdateAllThumbnails();
     }

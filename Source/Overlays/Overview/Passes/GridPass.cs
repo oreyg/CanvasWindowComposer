@@ -1,64 +1,70 @@
 using System;
-using System.Runtime.InteropServices;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
-using Vortice.DXGI;
 using Vortice.D3DCompiler;
 
 namespace CanvasDesktop;
 
 /// <summary>
-/// Renders an adaptive infinite grid using D3D11 + HLSL pixel shader.
-/// Uses Vortice.Windows for clean DirectX interop.
+/// Fullscreen-triangle grid pass. Reads the shared view CB (camera, size,
+/// time, DPI, pan accumulator) and renders the adaptive infinite grid plus
+/// nebula parallax. Falls back to clearing the RT when <see cref="DrawGrid"/>
+/// is false — used in Panning mode where the grid is hidden behind opaque
+/// window thumbnails.
 /// </summary>
-internal sealed class GridRenderer : IDisposable
+internal sealed class GridPass : IDisposable
 {
     private const int FullscreenTriangleVertexCount = 3;
-    private const int VsyncInterval = 1;
-    private const int RenderThreadJoinTimeoutMs = 1000;
-    private const int CbAlignmentMask = 15; // 16-byte alignment
 
-    private ID3D11Device? _device;
-    private ID3D11DeviceContext? _context;
-    private IDXGISwapChain? _swapChain;
-    private ID3D11RenderTargetView? _rtv;
-    private ID3D11PixelShader? _pixelShader;
-    private ID3D11VertexShader? _vertexShader;
-    private ID3D11Buffer? _constantBuffer;
-    private int _width, _height;
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct GridConstants
-    {
-        public float CamX, CamY;
-        public float Zoom;
-        public float ScreenW, ScreenH;
-        public float Time;
-        public float DpiScale;
-        public float PanAccumX, PanAccumY;
-        public float _pad0, _pad1;
-    }
-
-    private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
-
-    // Pre-compiled shader bytecode (compile once at startup)
     private static byte[]? _vsBytecode;
     private static byte[]? _psBytecode;
+
+    private ID3D11VertexShader? _vs;
+    private ID3D11PixelShader? _ps;
+
+    public bool DrawGrid { get; set; } = true;
 
     public static bool CompileShaders()
     {
         Compiler.Compile(ShaderSource, "VSMain", "", "vs_5_0", out var vsBlob, out var vsErr);
         if (vsBlob == null) { vsErr?.Dispose(); return false; }
-
         Compiler.Compile(ShaderSource, "PSMain", "", "ps_5_0", out var psBlob, out var psErr);
         if (psBlob == null) { vsBlob.Dispose(); psErr?.Dispose(); return false; }
-
         _vsBytecode = vsBlob.AsSpan().ToArray();
         _psBytecode = psBlob.AsSpan().ToArray();
-
         vsBlob.Dispose();
         psBlob.Dispose();
         return true;
+    }
+
+    public GridPass(ID3D11Device device)
+    {
+        if (_vsBytecode == null || _psBytecode == null)
+            throw new InvalidOperationException("GridPass.CompileShaders must run before construction");
+        _vs = device.CreateVertexShader(_vsBytecode);
+        _ps = device.CreatePixelShader(_psBytecode);
+    }
+
+    public void Render(ID3D11DeviceContext ctx, ID3D11RenderTargetView rtv, ID3D11Buffer gridCb)
+    {
+        if (DrawGrid)
+        {
+            ctx.VSSetShader(_vs);
+            ctx.PSSetShader(_ps);
+            ctx.PSSetConstantBuffer(0, gridCb);
+            ctx.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
+            ctx.Draw(FullscreenTriangleVertexCount, 0);
+        }
+        else
+        {
+            ctx.ClearRenderTargetView(rtv, new Vortice.Mathematics.Color4(0, 0, 0, 0));
+        }
+    }
+
+    public void Dispose()
+    {
+        _vs?.Dispose();
+        _ps?.Dispose();
     }
 
     private const string ShaderSource = @"
@@ -322,227 +328,4 @@ float4 PSMain(VSOut input) : SV_Target
     return float4(color, 1.0);
 }
 ";
-
-    public bool Initialize(IntPtr hwnd, int width, int height)
-    {
-        _width = width;
-        _height = height;
-
-        var swapDesc = new SwapChainDescription
-        {
-            BufferCount = 1,
-            BufferDescription = new ModeDescription((uint)width, (uint)height, Format.R8G8B8A8_UNorm),
-            BufferUsage = Usage.RenderTargetOutput,
-            OutputWindow = hwnd,
-            SampleDescription = new SampleDescription(1, 0),
-            Windowed = true,
-            SwapEffect = SwapEffect.Discard
-        };
-
-        var hr = D3D11.D3D11CreateDeviceAndSwapChain(
-            null!, DriverType.Hardware, DeviceCreationFlags.None, null!,
-            swapDesc, out _swapChain, out _device, out _, out _context);
-
-        if (hr.Failure) return false;
-
-        CreateRenderTarget();
-        if (!CreateShaders()) return false;
-        CreateConstantBuffer();
-        return true;
-    }
-
-    private void CreateRenderTarget()
-    {
-        using var backBuffer = _swapChain!.GetBuffer<ID3D11Texture2D>(0);
-        _rtv = _device!.CreateRenderTargetView(backBuffer);
-    }
-
-    private bool CreateShaders()
-    {
-        if (_vsBytecode == null || _psBytecode == null) return false;
-        _vertexShader = _device!.CreateVertexShader(_vsBytecode);
-        _pixelShader = _device!.CreatePixelShader(_psBytecode);
-        return true;
-    }
-
-    private void CreateConstantBuffer()
-    {
-        int cbSize = (Marshal.SizeOf<GridConstants>() + CbAlignmentMask) & ~CbAlignmentMask;
-        _constantBuffer = _device!.CreateBuffer(new BufferDescription(
-            (uint)cbSize,
-            BindFlags.ConstantBuffer,
-            ResourceUsage.Dynamic,
-            CpuAccessFlags.Write));
-    }
-
-    public volatile bool DrawGrid = true;
-
-    /// <summary>
-    /// Fired on the render thread after each Present. Use for vsync-paced ticks.
-    /// </summary>
-    public Action? OnFrameTick;
-
-    private float _dpiScale = 1.0f;
-    private volatile bool _running;
-    private volatile bool _alive = true;
-    private volatile bool _renderThreadIdle = true;
-    private readonly System.Threading.ManualResetEventSlim _wakeEvent = new(false);
-    private System.Threading.Thread? _renderThread;
-
-    // Camera state read by the render thread
-    private volatile float _renderCamX, _renderCamY, _renderZoom;
-    private float _panAccumX, _panAccumY; // only accumulates pan, not zoom-induced cam changes
-
-    public void SetDpiScale(float scale) => _dpiScale = scale;
-    public void ResetClock() => _clock.Restart();
-
-    /// <summary>Accumulate pan movement (not zoom). Drives nebula parallax.</summary>
-    public void AccumulatePan(double dx, double dy)
-    {
-        _panAccumX += (float)dx;
-        _panAccumY += (float)dy;
-    }
-
-    /// <summary>Render a single frame synchronously (legacy API).</summary>
-    public void Render(double camX, double camY, double zoom)
-    {
-        _renderCamX = (float)camX;
-        _renderCamY = (float)camY;
-        _renderZoom = (float)zoom;
-        RenderFrame();
-    }
-
-    /// <summary>Start the render loop (wakes the suspended thread).</summary>
-    public void Start(double camX, double camY, double zoom)
-    {
-        _renderCamX = (float)camX;
-        _renderCamY = (float)camY;
-        _renderZoom = (float)zoom;
-        _running = true;
-        _wakeEvent.Set();
-    }
-
-    /// <summary>Update camera for next frame (call from any thread).</summary>
-    public void UpdateCamera(double camX, double camY, double zoom)
-    {
-        _renderCamX = (float)camX;
-        _renderCamY = (float)camY;
-        _renderZoom = (float)zoom;
-    }
-
-    /// <summary>Stop rendering and go back to sleep.</summary>
-    public void Stop()
-    {
-        _running = false;
-    }
-
-    /// <summary>Start the background thread (call once after Initialize).</summary>
-    public void StartThread()
-    {
-        _renderThread = new System.Threading.Thread(RenderLoop)
-        {
-            IsBackground = true,
-            Name = "GridRenderer"
-        };
-        _renderThread.Start();
-    }
-
-    private void RenderLoop()
-    {
-        while (_alive)
-        {
-            _renderThreadIdle = true;
-            _wakeEvent.Wait(); // sleep until Start() signals
-            _renderThreadIdle = false;
-            _clock.Restart(); // reset time for fade-in blend
-
-            while (_running && _alive)
-            {
-                RenderFrame();
-                // Present(1) inside RenderFrame waits for VSync
-            }
-
-            _wakeEvent.Reset(); // go back to sleep
-        }
-        _renderThreadIdle = true;
-    }
-
-    /// <summary>Resize swap chain. Pauses render thread, resizes, resumes if was running.</summary>
-    public void Resize(int width, int height)
-    {
-        if (_swapChain == null || (_width == width && _height == height)) return;
-
-        bool wasRunning = _running;
-        _running = false;
-        _wakeEvent.Reset();
-        // Spin until render thread finishes the current frame and goes idle
-        while (!_renderThreadIdle) System.Threading.Thread.Yield();
-
-        _width = width;
-        _height = height;
-        _rtv?.Dispose();
-        _rtv = null;
-        _swapChain.ResizeBuffers(1, (uint)width, (uint)height, Format.R8G8B8A8_UNorm, 0);
-        CreateRenderTarget();
-
-        if (wasRunning)
-        {
-            _running = true;
-            _wakeEvent.Set();
-        }
-    }
-
-    private void RenderFrame()
-    {
-        if (_context == null || _swapChain == null) return;
-
-        var mapped = _context.Map(_constantBuffer!, MapMode.WriteDiscard);
-        var constants = new GridConstants
-        {
-            CamX = _renderCamX, CamY = _renderCamY,
-            Zoom = _renderZoom,
-            ScreenW = _width, ScreenH = _height,
-            Time = (float)_clock.Elapsed.TotalSeconds,
-            DpiScale = _dpiScale,
-            PanAccumX = _panAccumX, PanAccumY = _panAccumY
-        };
-        Marshal.StructureToPtr(constants, mapped.DataPointer, false);
-        _context.Unmap(_constantBuffer!);
-
-        _context.OMSetRenderTargets(_rtv!);
-        _context.RSSetViewport(0, 0, _width, _height);
-
-        if (DrawGrid)
-        {
-            _context.VSSetShader(_vertexShader);
-            _context.PSSetShader(_pixelShader);
-            _context.PSSetConstantBuffer(0, _constantBuffer);
-            _context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
-            _context.Draw(FullscreenTriangleVertexCount, 0);
-        }
-        else
-        {
-            _context.ClearRenderTargetView(_rtv!, new Vortice.Mathematics.Color4(0, 0, 0, 0));
-        }
-
-        _swapChain.Present(VsyncInterval, PresentFlags.None);
-        OnFrameTick?.Invoke();
-    }
-
-    public void Dispose()
-    {
-        _alive = false;
-        _running = false;
-        _wakeEvent.Set(); // wake to exit
-        _renderThread?.Join(RenderThreadJoinTimeoutMs);
-        _wakeEvent.Dispose();
-
-        _rtv?.Dispose();
-        _constantBuffer?.Dispose();
-        _pixelShader?.Dispose();
-        _vertexShader?.Dispose();
-        _swapChain?.Dispose();
-        _context?.Dispose();
-        _device?.Dispose();
-    }
 }

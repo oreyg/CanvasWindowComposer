@@ -56,7 +56,7 @@ content is in fact fully opaque — the swap chain fills every pixel.
    keep a redirection bitmap for the window. The DXGI swap chain renders
    straight to the visual — what browsers and games do for the same reason.
    Tested here: thumbnails *do* render, but two issues showed up:
-   - **Our `GridRenderer` swap-chain output doesn't appear** — without a
+   - **Our `OverviewRenderer` swap-chain output doesn't appear** — without a
      redirection bitmap on the window, the swap chain we set up via
      `Initialize(Handle, ...)` isn't composited. Would need to switch to
      `DirectComposition` (`DCompositionCreateDevice` + visual tree
