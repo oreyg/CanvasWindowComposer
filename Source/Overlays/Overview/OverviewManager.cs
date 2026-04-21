@@ -72,6 +72,12 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
     private int _dragIndex = -1;
     private int _dragStartVx, _dragStartVy;
 
+    // Last observed cursor position in virtual-screen coordinates. Feeds the
+    // per-thumbnail WGC throttle heuristic so hovered thumbnails keep pulling
+    // frames at realtime while others drop to half/quarter/paused.
+    private int _lastMouseVx = int.MinValue;
+    private int _lastMouseVy = int.MinValue;
+
     public OverviewManager(Canvas mainCanvas, WindowManager wm, IWindowApi win32, IInputRouter input, IScreens? screens = null)
     {
         _mainCanvas = mainCanvas;
@@ -486,12 +492,13 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
     {
         // _windows is topmost-first (EnumWindows order). Register
         // bottom-to-top so the topmost window's thumbnail draws last (on top).
+        // DWM thumbnail registration for canvas windows is disabled — WGC now
+        // drives all window compositing via the shader. The list still drives
+        // iteration order (= draw order) and drag-state bookkeeping.
         for (int i = _windows.Count - 1; i >= 0; i--)
         {
             var entry = _windows.Windows[i];
-            HRESULT hr = PInvoke.DwmRegisterThumbnail((HWND)pass.Handle, (HWND)entry.HWnd, out nint thumb);
-            if (hr.Succeeded) pass.Thumbnails.Add((entry.HWnd, thumb, entry.World));
-            // WGC capture session for this HWND on the pass's D3D device.
+            pass.Thumbnails.Add((entry.HWnd, IntPtr.Zero, entry.World));
             pass.Renderer?.RegisterCaptureWindow(entry.HWnd);
         }
     }
@@ -511,28 +518,25 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         PInvoke.SetWindowPos((HWND)hWnd, HWND.Null, 0, 0, 0, 0,
             SET_WINDOW_POS_FLAGS.SWP_NOMOVE | SET_WINDOW_POS_FLAGS.SWP_NOSIZE | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE);
 
-        // Re-register the window's thumbnail on every pass so it draws last (on top).
+        // Move the thumbnail entry to the end of pass.Thumbnails so the
+        // shader draws it last (= on top). No DWM re-register needed — WGC
+        // drives the compositing now and draw order follows list order.
         foreach (var pass in _passes)
         {
             int idx = -1;
-            WorldRect world = default;
+            (IntPtr hWnd, IntPtr thumb, WorldRect world) entry = default;
             for (int i = 0; i < pass.Thumbnails.Count; i++)
             {
                 if (pass.Thumbnails[i].hWnd == hWnd)
                 {
                     idx = i;
-                    world = pass.Thumbnails[i].world;
-                    PInvoke.DwmUnregisterThumbnail(pass.Thumbnails[i].thumb);
+                    entry = pass.Thumbnails[i];
                     break;
                 }
             }
             if (idx < 0) continue;
-
             pass.Thumbnails.RemoveAt(idx);
-
-            HRESULT hr = PInvoke.DwmRegisterThumbnail((HWND)pass.Handle, (HWND)hWnd, out nint newThumb);
-            if (hr.Succeeded)
-                pass.Thumbnails.Add((hWnd, newThumb, world));
+            pass.Thumbnails.Add(entry);
         }
 
         UpdateAllThumbnails();
@@ -540,11 +544,8 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
     private void UnregisterWindowThumbnails(OverviewOverlay pass)
     {
-        foreach (var (hWnd, thumb, _) in pass.Thumbnails)
-        {
-            PInvoke.DwmUnregisterThumbnail(thumb);
+        foreach (var (hWnd, _, _) in pass.Thumbnails)
             pass.Renderer?.UnregisterCaptureWindow(hWnd);
-        }
         pass.Thumbnails.Clear();
     }
 
@@ -565,7 +566,15 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         Span<ThumbnailPass.Instance> instances = _thumbInstanceScratch;
         Span<IntPtr> hwnds = _thumbHwndScratch;
 
-        foreach (var (hWnd, thumb, world) in pass.Thumbnails)
+        int passW = pass.Screen.Bounds.Width;
+        int passH = pass.Screen.Bounds.Height;
+        int cursorPx = _lastMouseVx - pass.OriginX;
+        int cursorPy = _lastMouseVy - pass.OriginY;
+        IntPtr selectedHwnd = (_windows.SelectedIndex >= 0 && _windows.SelectedIndex < _windows.Count)
+            ? _windows.Windows[_windows.SelectedIndex].HWnd
+            : IntPtr.Zero;
+
+        foreach (var (hWnd, _, world) in pass.Thumbnails)
         {
             int sx = (int)((world.X - _camera.X) * zoom);
             int sy = (int)((world.Y - _camera.Y) * zoom);
@@ -583,19 +592,11 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
             int right  = sx + sw - fR - pass.OriginX;
             int bottom = sy + sh - fB - pass.OriginY;
 
-            var props = new DWM_THUMBNAIL_PROPERTIES
-            {
-                dwFlags = PInvoke.DWM_TNP_RECTDESTINATION | PInvoke.DWM_TNP_VISIBLE | PInvoke.DWM_TNP_OPACITY,
-                rcDestination = new RECT { left = left, top = top, right = right, bottom = bottom },
-                fVisible = false, // TEMP: hidden so only the WGC shader pass is visible
-                opacity = 255
-            };
-            PInvoke.DwmUpdateThumbnailProperties(thumb, props);
+            bool hovered = cursorPx >= left && cursorPx < right && cursorPy >= top && cursorPy < bottom;
+            bool selected = hWnd == selectedHwnd;
+            var rate = ComputeCaptureRate(left, top, right, bottom, passW, passH, hovered, selected);
+            pass.Renderer?.SetCaptureRate(hWnd, rate);
 
-            // Mirror the DWM thumbnail rect (inset-adjusted) into the shader
-            // instance buffer. WGC-sampled texture fills this rect; if capture
-            // hasn't delivered a frame yet the shader skips drawing and the
-            // DWM thumbnail underneath shows through as a fallback.
             if (instanceCount < instances.Length)
             {
                 instances[instanceCount] = new ThumbnailPass.Instance
@@ -603,7 +604,8 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
                     Left = left,
                     Top = top,
                     Right = right,
-                    Bottom = bottom
+                    Bottom = bottom,
+                    Rate = (uint)rate
                 };
                 hwnds[instanceCount] = hWnd;
                 instanceCount++;
@@ -611,6 +613,31 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         }
 
         pass.Renderer?.SetThumbnailInstances(instances[..instanceCount], hwnds[..instanceCount]);
+    }
+
+    /// <summary>
+    /// Per-thumbnail WGC pull cadence: the more visible / interacted-with a
+    /// thumbnail is, the more often we pay the CopyResource cost to refresh it.
+    /// Thresholds are first-cut — tune once we have real perf numbers.
+    /// </summary>
+    private static WindowCapture.Rate ComputeCaptureRate(
+        int left, int top, int right, int bottom,
+        int passW, int passH, bool hovered, bool selected)
+    {
+        int clippedL = Math.Max(0, left);
+        int clippedT = Math.Max(0, top);
+        int clippedR = Math.Min(passW, right);
+        int clippedB = Math.Min(passH, bottom);
+        int clippedW = Math.Max(0, clippedR - clippedL);
+        int clippedH = Math.Max(0, clippedB - clippedT);
+        if (clippedW == 0 || clippedH == 0) return WindowCapture.Rate.Paused;
+
+        if (hovered || selected) return WindowCapture.Rate.Realtime;
+
+        int rectW = Math.Max(1, right - left);
+        int rectH = Math.Max(1, bottom - top);
+        bool fullyVisible = clippedW == rectW && clippedH == rectH;
+        return fullyVisible ? WindowCapture.Rate.Half : WindowCapture.Rate.Quarter;
     }
 
     // Reused across passes; size matches ThumbnailPass.MaxThumbnails.
@@ -705,10 +732,12 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
     private void HandleMouseMove(OverviewOverlay pass, MouseEventArgs e)
     {
-        if (!_cfg.InputEnabled) return;
-
         int vx = e.X + pass.OriginX;
         int vy = e.Y + pass.OriginY;
+        _lastMouseVx = vx;
+        _lastMouseVy = vy;
+
+        if (!_cfg.InputEnabled) return;
 
         if (_draggingWindow && _dragIndex >= 0 && _dragIndex < _windows.Count)
         {

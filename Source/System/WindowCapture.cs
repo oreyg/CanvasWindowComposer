@@ -24,6 +24,18 @@ namespace CanvasDesktop;
 /// </summary>
 internal sealed class WindowCapture : IDisposable
 {
+    /// <summary>
+    /// How often <see cref="Sample"/> actually pulls a new frame out of the
+    /// WGC pool. Values other than <see cref="Realtime"/> skip the per-frame
+    /// CopyResource — the shader keeps sampling the last captured texture.
+    /// </summary>
+    public enum Rate
+    {
+        Paused = 0,    // never pull — serve last frame indefinitely
+        Realtime = 1,  // every render frame
+        Half = 2,      // every 2nd
+        Quarter = 4    // every 4th
+    }
     private readonly ID3D11Device _device;
     private readonly IDirect3DDevice _winrtDevice;
     private readonly Dictionary<IntPtr, Session> _sessions = new();
@@ -93,6 +105,15 @@ internal sealed class WindowCapture : IDisposable
         s.Dispose();
     }
 
+    /// <summary>Set the frame-pull cadence for a registered HWND.</summary>
+    public void SetRate(IntPtr hwnd, Rate rate)
+    {
+        lock (_lock)
+        {
+            if (_sessions.TryGetValue(hwnd, out var s)) s.CurrentRate = rate;
+        }
+    }
+
     /// <summary>
     /// Pull the latest captured frame for <paramref name="hwnd"/> (if any) and
     /// copy it into the session's persistent texture via the given render-thread
@@ -104,6 +125,14 @@ internal sealed class WindowCapture : IDisposable
         Session? s;
         lock (_lock) { _sessions.TryGetValue(hwnd, out s); }
         if (s == null) return null;
+
+        // Throttle: Paused never pulls, and skip-based rates pull once every
+        // N render frames. In between, the shader keeps sampling the last
+        // captured texture stored on the session.
+        if (s.CurrentRate == Rate.Paused) return s.Srv;
+        s.FrameCounter++;
+        if (s.FrameCounter < (int)s.CurrentRate) return s.Srv;
+        s.FrameCounter = 0;
 
         using var frame = s.Pool.TryGetNextFrame();
         if (frame != null)
@@ -156,6 +185,8 @@ internal sealed class WindowCapture : IDisposable
         public ID3D11Texture2D? Persistent;
         public ID3D11ShaderResourceView? Srv;
         public int Width, Height;
+        public Rate CurrentRate = Rate.Realtime;
+        public int FrameCounter;
 
         public void Dispose()
         {

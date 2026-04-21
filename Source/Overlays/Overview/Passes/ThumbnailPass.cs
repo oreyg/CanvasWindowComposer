@@ -20,11 +20,17 @@ internal sealed class ThumbnailPass : IDisposable
     public const int MaxThumbnails = 256;
     private const int QuadVertexCount = 6;
 
-    /// <summary>Per-instance thumbnail rect, in pass-local screen pixels.</summary>
+    /// <summary>
+    /// Per-instance thumbnail rect (pass-local screen pixels) plus the
+    /// current WGC capture rate. The shader reads the rate to render a small
+    /// debug color tag in the rect's top-left corner; remove the tag in
+    /// <c>PSThumb</c> when the throttle heuristic is trusted.
+    /// </summary>
     [StructLayout(LayoutKind.Sequential)]
     public struct Instance
     {
         public float Left, Top, Right, Bottom;
+        public uint Rate;
     }
 
     private static byte[]? _vsBytecode;
@@ -125,9 +131,11 @@ internal sealed class ThumbnailPass : IDisposable
         ctx.VSSetShader(_vs);
         ctx.PSSetShader(_ps);
         ctx.VSSetShaderResource(0, _instanceSrv);
+        ctx.PSSetShaderResource(0, _instanceSrv!); // PS also reads rate for debug tag
         ctx.VSSetConstantBuffer(0, gridCb);
         ctx.VSSetConstantBuffer(1, _drawCb);
         ctx.PSSetConstantBuffer(0, gridCb);
+        ctx.PSSetConstantBuffer(1, _drawCb); // PS needs gInstIdx too
         ctx.PSSetSampler(0, sampler);
         ctx.OMSetBlendState(blendState, new Vortice.Mathematics.Color4(0, 0, 0, 0), 0xFFFFFFFF);
         ctx.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
@@ -148,6 +156,7 @@ internal sealed class ThumbnailPass : IDisposable
 
         ctx.OMSetBlendState(null, new Vortice.Mathematics.Color4(0, 0, 0, 0), 0xFFFFFFFF);
         ctx.VSSetShaderResource(0, (ID3D11ShaderResourceView?)null);
+        ctx.PSSetShaderResource(0, null!);
         ctx.PSSetShaderResource(1, null!);
     }
 
@@ -187,6 +196,10 @@ internal sealed class ThumbnailPass : IDisposable
     }
 
     private const string ShaderSource = @"
+// Toggle the top-left capture-rate color tag (green/yellow/orange/red).
+// Comment out to remove the tag — keeps the throttle heuristic running.
+#define DEBUG_RATE_TAG 1
+
 cbuffer GridCB : register(b0)
 {
     float2 camPos;
@@ -200,7 +213,7 @@ cbuffer GridCB : register(b0)
     float2 _pad;
 };
 
-struct ThumbInst { float4 ltrb; };
+struct ThumbInst { float4 ltrb; uint rate; };
 StructuredBuffer<ThumbInst> gThumbs : register(t0);
 
 // SV_InstanceID is relative to a single DrawInstanced call (always 0 when we
@@ -253,6 +266,24 @@ float4 PSThumb(VSOut i) : SV_Target
     float4 c = gThumbTexture.Sample(gThumbSampler, i.uv);
     c.a = 1.0; // Captured frames include opaque window content; force alpha to
                // avoid stale-alpha from whatever was in the texture previously.
+
+#ifdef DEBUG_RATE_TAG
+    // 10px square in the top-left of the thumbnail tinted by capture rate so
+    // the throttle policy is visible at a glance.
+    //   Realtime=green, Half=yellow, Quarter=orange, Paused=red.
+    float4 r = gThumbs[gInstIdx].ltrb;
+    float tagSize = 10.0;
+    if (i.pos.x < r.x + tagSize && i.pos.y < r.y + tagSize)
+    {
+        uint rate = gThumbs[gInstIdx].rate;
+        float3 tag;
+        if (rate == 1)      tag = float3(0.0, 1.0, 0.0);
+        else if (rate == 2) tag = float3(1.0, 1.0, 0.0);
+        else if (rate == 4) tag = float3(1.0, 0.5, 0.0);
+        else                tag = float3(1.0, 0.0, 0.0);
+        c.rgb = tag;
+    }
+#endif
     return c;
 }
 ";

@@ -143,6 +143,12 @@ internal sealed class OverviewRenderer : IDisposable
             _thumbnailPass.UnregisterWindow(hwnd, _capture);
     }
 
+    /// <summary>Set the WGC frame-pull cadence for a registered HWND.</summary>
+    public void SetCaptureRate(IntPtr hwnd, WindowCapture.Rate rate)
+    {
+        _capture?.SetRate(hwnd, rate);
+    }
+
     public void SetThumbnailInstances(ReadOnlySpan<ThumbnailPass.Instance> instances, ReadOnlySpan<IntPtr> hwnds)
     {
         _thumbnailPass?.SetInstances(instances, hwnds);
