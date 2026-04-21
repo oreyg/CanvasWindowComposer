@@ -59,8 +59,8 @@ internal sealed class Win32InputRouter : IInputRouter, IDisposable
 
         _msgWindow = new MessageWindow();
         _msgWindow.RegisterHandlers(
-            onSearchHotkey:   () => SearchHotkey?.Invoke(),
-            onOverviewHotkey: () => OverviewHotkey?.Invoke());
+            onSearchHotkey:   config.DisableSearch     ? null : () => SearchHotkey?.Invoke(),
+            onOverviewHotkey: config.DisableZoomHotkey ? null : () => OverviewHotkey?.Invoke());
 
         _winEvents = new Win32EventRouter();
         _winEvents.WindowMinimized += h => WindowMinimized?.Invoke(h);

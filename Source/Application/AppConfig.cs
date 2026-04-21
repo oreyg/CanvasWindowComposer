@@ -16,6 +16,13 @@ internal interface IAppConfig
     bool DisableDllInjection { get; }
 
     /// <summary>
+    /// When true, Alt+Q is not registered as a global hotkey, leaving it
+    /// available to other apps. The overview can still be opened via the
+    /// middle-click drag pan flow.
+    /// </summary>
+    bool DisableZoomHotkey { get; }
+
+    /// <summary>
     /// When false (default), raw mouse deltas are passed through Windows'
     /// pointer acceleration curve before being applied to the canvas, so pan
     /// speed matches cursor speed and the cursor stays anchored to the same
@@ -45,9 +52,10 @@ internal sealed class AppConfig : IAppConfig
 
     public bool DisableSearch { get; private set; }
     public bool DisableAltPan { get; private set; }
-    public bool DisableGreedyDraw { get; private set; }
-    public bool DisableDllInjection { get; private set; }
+    public bool DisableGreedyDraw { get; private set; } = true;
+    public bool DisableDllInjection { get; private set; } = true;
     public bool DisableMouseCurve { get; private set; }
+    public bool DisableZoomHotkey { get; private set; }
 
     public AppConfig(IClock? clock = null)
     {
@@ -64,11 +72,12 @@ internal sealed class AppConfig : IAppConfig
 
         var values = ParseIni(ConfigPath);
 
-        DisableSearch = GetBool(values, "DisableSearch");
-        DisableAltPan = GetBool(values, "DisableAltPan");
-        DisableGreedyDraw = GetBool(values, "DisableGreedyDraw");
-        DisableDllInjection = GetBool(values, "DisableDllInjection");
-        DisableMouseCurve = GetBool(values, "DisableMouseCurve");
+        DisableSearch = GetBool(values, "DisableSearch", defaultValue: false);
+        DisableAltPan = GetBool(values, "DisableAltPan", defaultValue: false);
+        DisableGreedyDraw = GetBool(values, "DisableGreedyDraw", defaultValue: true);
+        DisableDllInjection = GetBool(values, "DisableDllInjection", defaultValue: true);
+        DisableMouseCurve = GetBool(values, "DisableMouseCurve", defaultValue: false);
+        DisableZoomHotkey = GetBool(values, "DisableZoomHotkey", defaultValue: false);
     }
 
     /// <summary>Watch config.ini for changes and reload automatically.</summary>
@@ -112,14 +121,22 @@ internal sealed class AppConfig : IAppConfig
 
 ; Disable SetWindowRgn clipping for off-screen windows
 ; Retains Alt-Tab and taskbar thumbnails at expense of performance
-;DisableGreedyDraw=false
+; Default on - with clipping enabled, you might see gray windows,
+; if this app terminates unexpectedly
+;DisableGreedyDraw=true
 
 ; Disable DLL injection into managed windows
-;DisableDllInjection=false
+; Defaults on - this enables additional cleanup, that is only necessary,
+; if Greedy Draw is enabled
+;DisableDllInjection=true
 
 ; Disable Windows pointer acceleration curve on pan deltas
 ; (default off = curve on, pan tracks cursor; on = raw HID deltas)
 ;DisableMouseCurve=false
+
+; Disable the Alt+Q overview/zoom global hotkey
+; (frees Alt+Q for other apps; the overview is still reachable via pan)
+;DisableZoomHotkey=false
 ");
     }
 
@@ -144,9 +161,10 @@ internal sealed class AppConfig : IAppConfig
         return result;
     }
 
-    private static bool GetBool(Dictionary<string, string> values, string key)
+    private static bool GetBool(Dictionary<string, string> values, string key, bool defaultValue)
     {
-        return values.TryGetValue(key, out string? val) &&
-               val.Equals("true", StringComparison.OrdinalIgnoreCase);
+        if (!values.TryGetValue(key, out string? val))
+            return defaultValue;
+        return val.Equals("true", StringComparison.OrdinalIgnoreCase);
     }
 }

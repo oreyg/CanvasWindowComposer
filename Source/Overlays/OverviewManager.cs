@@ -37,6 +37,11 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
     // Per-monitor passes
     private readonly List<OverviewOverlay> _passes = new();
 
+    // MMCSS registration for the UI thread while the overview is open —
+    // keeps WM_PAINT / mouse-message dispatch on near-realtime scheduling.
+    // Released on Hide.
+    private IntPtr _mmcssHandle;
+
     // Cached shell HWNDs — stable across overview opens, invalidated on display
     // topology change (where _passes themselves are rebuilt) and self-healing
     // via IsWindow() guards (explorer.exe restart destroys Progman / WorkerW /
@@ -240,6 +245,9 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         foreach (var p in _passes)
             p.Warmup();
 
+        if (_mmcssHandle == IntPtr.Zero)
+            _mmcssHandle = Mmcss.Begin("Window Manager");
+
         _camera.SyncFrom(_mainCanvas);
 
         _wm.SuspendGreedyDraw = true;
@@ -293,18 +301,32 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         foreach (var p in _passes)
         {
             p.Hide();
+            p.SetLayered(false);
             UnregisterTaskbarThumbnails(p);
             UnregisterWindowThumbnails(p);
             UnregisterDesktopThumbnail(p);
         }
         _windows.Clear();
+
+        if (_mmcssHandle != IntPtr.Zero)
+        {
+            Mmcss.Revert(_mmcssHandle);
+            _mmcssHandle = IntPtr.Zero;
+        }
     }
 
     private void ApplyConfig()
     {
+        // WS_EX_LAYERED is added in Panning and removed in Zooming. Panning
+        // is where background-throttle freezes were seen after losing
+        // foreground (click lands on an underlying window on drag release);
+        // layered compositing seems to keep DWM driving the overlay. Zooming
+        // holds foreground itself so it doesn't need the layered cost.
+        bool wantLayered = (CurrentMode == OverviewMode.Panning);
         foreach (var p in _passes)
         {
             if (p.Grid != null) p.Grid.DrawGrid = _cfg.GridVisible;
+            p.SetLayered(wantLayered);
             p.SetClickThrough(!_cfg.InputEnabled);
         }
         UpdateAllThumbnails();

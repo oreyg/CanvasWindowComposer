@@ -28,7 +28,6 @@ internal sealed class TrayApp : ApplicationContext
     private readonly Win32InputRouter _input;
     private readonly DesktopStateCache _desktops;
     private readonly ForegroundCoordinator _foreground;
-    private readonly DesktopRefreshWatcher _refreshWatcher;
     private bool _enabled = true;
 
     public TrayApp(IClock? clock = null, IScreens? screens = null)
@@ -53,12 +52,7 @@ internal sealed class TrayApp : ApplicationContext
 
         // Constructed last so they can self-subscribe to canvas/input/desktops events.
         _minimap = new MinimapOverlay(_canvas, _input, _desktops, _screens);
-        _search = new SearchOverlay(_canvas, _wm, winApi, _input, _config, _screens);
-
-        // Mirror the tray's Refresh action whenever the user refreshes the
-        // desktop in Explorer (F5 / right-click → Refresh) — that's a strong
-        // hint they want the visual state cleaned up.
-        _refreshWatcher = new DesktopRefreshWatcher(_wm.RefreshAllWindows);
+        _search = new SearchOverlay(_canvas, _wm, winApi, _input, _screens);
 
         _bgTimer = new Timer { Interval = ReconcileTimerIntervalMs };
         _bgTimer.Tick += OnBgTick;
@@ -120,7 +114,6 @@ internal sealed class TrayApp : ApplicationContext
     {
         _bgTimer.Stop();
         _bgTimer.Dispose();
-        _refreshWatcher.Dispose();
         _input.Dispose();
         _wm.Reset();
         _wm.Dispose();

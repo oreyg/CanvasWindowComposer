@@ -38,7 +38,14 @@ internal sealed class OverviewOverlay : Form
         get
         {
             var cp = base.CreateParams;
-            cp.ExStyle |= 0x80; // WS_EX_TOOLWINDOW
+            // WS_EX_TOOLWINDOW (0x80): keep out of Alt-Tab / taskbar.
+            // No WS_EX_LAYERED — Win10+ accepts WS_EX_TRANSPARENT alone for
+            // cross-process click-through, so we skip the layered-window
+            // compositing path. Click-through is toggled in SetClickThrough.
+            // WS_EX_NOREDIRECTIONBITMAP was tried and broke DWM thumbnail
+            // compositing (we're the destination of DwmRegisterThumbnail and
+            // DWM needs the redirection surface to draw into).
+            cp.ExStyle |= 0x80;
             return cp;
         }
     }
@@ -87,14 +94,38 @@ internal sealed class OverviewOverlay : Form
         if (!IsHandleCreated) return;
         HWND h = (HWND)Handle;
         int ex = PInvoke.GetWindowLong(h, WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE);
-        int flags = (int)(WINDOW_EX_STYLE.WS_EX_TRANSPARENT | WINDOW_EX_STYLE.WS_EX_LAYERED);
-        int updated = enable ? (ex | flags) : (ex & ~flags);
+        int flag = (int)WINDOW_EX_STYLE.WS_EX_TRANSPARENT;
+        int updated = enable ? (ex | flag) : (ex & ~flag);
         if (updated == ex) return;
+        // HTTRANSPARENT only cascades within the same thread (per MSDN), so it
+        // can't pass clicks to other apps' windows. WS_EX_TRANSPARENT does, via
+        // DWM's input-routing layer.
+        PInvoke.SetWindowLong(h, WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE, updated);
+        PInvoke.SetWindowPos(h, HWND.Null, 0, 0, 0, 0,
+            SET_WINDOW_POS_FLAGS.SWP_NOMOVE | SET_WINDOW_POS_FLAGS.SWP_NOSIZE | SET_WINDOW_POS_FLAGS.SWP_NOZORDER |
+            SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE | SET_WINDOW_POS_FLAGS.SWP_FRAMECHANGED);
+    }
 
+    /// <summary>
+    /// Toggle <c>WS_EX_LAYERED</c> at runtime. Normally avoided — layered
+    /// compositing carries a DWM redirection-surface cost even at
+    /// <c>LWA_ALPHA 255</c> — but adding it kicks DWM's composition state
+    /// and can break an otherwise sticky background-throttle.
+    /// </summary>
+    public void SetLayered(bool enable)
+    {
+        if (!IsHandleCreated) return;
+        HWND h = (HWND)Handle;
+        int ex = PInvoke.GetWindowLong(h, WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE);
+        int flag = (int)WINDOW_EX_STYLE.WS_EX_LAYERED;
+        int updated = enable ? (ex | flag) : (ex & ~flag);
+        if (updated == ex) return;
         PInvoke.SetWindowLong(h, WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE, updated);
         if (enable)
         {
-            PInvoke.SetLayeredWindowAttributes(h, (COLORREF)0, 255, LAYERED_WINDOW_ATTRIBUTES_FLAGS.LWA_ALPHA);
+            // Without SetLayeredWindowAttributes after adding WS_EX_LAYERED the
+            // window paints as fully transparent until attributes are set.
+            PInvoke.SetLayeredWindowAttributes(h, new COLORREF(0), 255, LAYERED_WINDOW_ATTRIBUTES_FLAGS.LWA_ALPHA);
         }
         PInvoke.SetWindowPos(h, HWND.Null, 0, 0, 0, 0,
             SET_WINDOW_POS_FLAGS.SWP_NOMOVE | SET_WINDOW_POS_FLAGS.SWP_NOSIZE | SET_WINDOW_POS_FLAGS.SWP_NOZORDER |

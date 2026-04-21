@@ -30,9 +30,13 @@ internal sealed class MessageWindow : NativeWindow, IDisposable
         _onSearchHotkey = onSearchHotkey;
         _onOverviewHotkey = onOverviewHotkey;
 
+        // A null callback means "don't register the hotkey" — leaves it free
+        // for other apps. Driven by DisableSearch / DisableZoomHotkey config.
         const HOT_KEY_MODIFIERS modifiers = HOT_KEY_MODIFIERS.MOD_ALT | HOT_KEY_MODIFIERS.MOD_NOREPEAT;
-        PInvoke.RegisterHotKey((HWND)Handle, HOTKEY_SEARCH, modifiers, VK_S);
-        PInvoke.RegisterHotKey((HWND)Handle, HOTKEY_OVERVIEW, modifiers, VK_Q);
+        if (onSearchHotkey != null)
+            PInvoke.RegisterHotKey((HWND)Handle, HOTKEY_SEARCH, modifiers, VK_S);
+        if (onOverviewHotkey != null)
+            PInvoke.RegisterHotKey((HWND)Handle, HOTKEY_OVERVIEW, modifiers, VK_Q);
     }
 
     /// <summary>
