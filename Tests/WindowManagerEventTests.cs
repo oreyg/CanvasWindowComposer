@@ -22,7 +22,7 @@ public class WindowManagerEventTests
 
         public Harness()
         {
-            Wm = new WindowManager(Canvas, Api, new DllInjector(), Config, Input, Clock);
+            Wm = new WindowManager(Canvas, Api, Config, Input, Clock);
         }
     }
 

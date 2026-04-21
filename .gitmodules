@@ -1,3 +1,0 @@
-[submodule "native/minhook"]
-	path = native/minhook
-	url = https://github.com/TsudaKageyu/minhook.git

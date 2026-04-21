@@ -25,36 +25,8 @@ if "%NSIS%"=="" (
     exit /b 1
 )
 
-where cmake >nul 2>&1
-if %errorlevel% neq 0 (
-    echo ERROR: CMake not found. Install from https://cmake.org/download/
-    popd
-    exit /b 1
-)
-
 echo [OK] .NET SDK
 echo [OK] NSIS: %NSIS%
-echo [OK] CMake
-echo.
-
-:: --- Build native DLL ---
-
-echo Building native DpiHook.dll...
-pushd native
-cmake -B build -G "Visual Studio 17 2022" -A x64 >nul 2>&1
-if %errorlevel% neq 0 (
-    echo ERROR: CMake configure failed. Make sure Visual Studio 2022 with C++ workload is installed.
-    popd & popd
-    exit /b 1
-)
-cmake --build build --config Release >nul 2>&1
-if %errorlevel% neq 0 (
-    echo ERROR: Native DLL build failed.
-    popd & popd
-    exit /b 1
-)
-popd
-echo [OK] DpiHook.dll
 echo.
 
 :: --- Publish C# app ---
@@ -69,9 +41,6 @@ if %errorlevel% neq 0 (
     popd
     exit /b 1
 )
-
-:: Copy native DLL into publish output
-copy /y "bin\Release\net8.0-windows\DpiHook.dll" "Install\publish-fd\" >nul 2>&1
 echo [OK] C# publish
 echo.
 

@@ -18,7 +18,6 @@ internal sealed class TrayApp : ApplicationContext
     private readonly AppConfig _config;
     private readonly NotifyIcon _trayIcon;
     private readonly Timer _bgTimer;
-    private readonly DllInjector _injector;
     private readonly Canvas _canvas;
     private readonly WindowManager _wm;
     private readonly VirtualDesktopService _vds;
@@ -40,11 +39,10 @@ internal sealed class TrayApp : ApplicationContext
         GridRenderer.CompileShaders();
 
         var winApi = new Win32WindowApi(_screens);
-        _injector = new DllInjector();
         _vds = new VirtualDesktopService();
         _canvas = new Canvas();
         _input = new Win32InputRouter(_config);
-        _wm = new WindowManager(_canvas, winApi, _injector, _config, _input, _clock, _vds, useAsyncProjection: true);
+        _wm = new WindowManager(_canvas, winApi, _config, _input, _clock, _vds, useAsyncProjection: true);
         _overview = new OverviewManager(_canvas, _wm, winApi, _input, _screens);
         _overview.Warmup();
         _foreground = new ForegroundCoordinator(_canvas, _overview, _input, _clock, _screens);

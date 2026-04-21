@@ -5,7 +5,7 @@ namespace CanvasDesktop;
 
 /// <summary>
 /// Consumes Canvas state and applies it to real windows.
-/// Handles enumeration, positioning, DPI injection, reconciliation.
+/// Handles enumeration, positioning, reconciliation.
 /// </summary>
 internal sealed class WindowManager : IDisposable
 {
@@ -17,7 +17,6 @@ internal sealed class WindowManager : IDisposable
 
     private readonly Canvas _canvas;
     private readonly IWindowApi _win32;
-    private readonly DllInjector _injector;
     private readonly IAppConfig _config;
     private readonly IClock _clock;
     private readonly IVirtualDesktops? _vds;
@@ -75,7 +74,6 @@ internal sealed class WindowManager : IDisposable
     public WindowManager(
         Canvas canvas,
         IWindowApi win32,
-        DllInjector injector,
         IAppConfig config,
         IInputRouter input,
         IClock? clock = null,
@@ -84,7 +82,6 @@ internal sealed class WindowManager : IDisposable
     {
         _canvas = canvas;
         _win32 = win32;
-        _injector = injector;
         _config = config;
         _clock = clock ?? SystemClock.Instance;
         _vds = vds;
@@ -410,13 +407,6 @@ internal sealed class WindowManager : IDisposable
 
         _canvas.SetWindowFromScreen(hWnd, sx, sy, sw, sh);
         _lastScreen[hWnd] = (sx, sy, sw, sh);
-
-        if (!_config.DisableDllInjection)
-        {
-            uint pid = _win32.GetWindowProcessId(hWnd);
-            if (!_injector.IsInjected(pid))
-                _injector.Inject(pid);
-        }
     }
 
     /// <summary>

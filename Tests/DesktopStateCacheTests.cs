@@ -21,7 +21,7 @@ public class DesktopStateCacheTests
         public Harness(Guid? initialDesktop = null)
         {
             Vds.CurrentDesktopId = initialDesktop ?? Guid.Empty;
-            Wm = new WindowManager(Canvas, Api, new DllInjector(), Config, Input, Clock);
+            Wm = new WindowManager(Canvas, Api, Config, Input, Clock);
             Cache = new DesktopStateCache(Canvas, Wm, Overview, Vds);
         }
     }

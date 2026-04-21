@@ -13,7 +13,6 @@ internal interface IAppConfig
     bool DisableSearch { get; }
     bool DisableAltPan { get; }
     bool DisableGreedyDraw { get; }
-    bool DisableDllInjection { get; }
 
     /// <summary>
     /// When true, Alt+Q is not registered as a global hotkey, leaving it
@@ -53,7 +52,6 @@ internal sealed class AppConfig : IAppConfig
     public bool DisableSearch { get; private set; }
     public bool DisableAltPan { get; private set; }
     public bool DisableGreedyDraw { get; private set; } = true;
-    public bool DisableDllInjection { get; private set; } = true;
     public bool DisableMouseCurve { get; private set; }
     public bool DisableZoomHotkey { get; private set; }
 
@@ -75,7 +73,6 @@ internal sealed class AppConfig : IAppConfig
         DisableSearch = GetBool(values, "DisableSearch", defaultValue: false);
         DisableAltPan = GetBool(values, "DisableAltPan", defaultValue: false);
         DisableGreedyDraw = GetBool(values, "DisableGreedyDraw", defaultValue: true);
-        DisableDllInjection = GetBool(values, "DisableDllInjection", defaultValue: true);
         DisableMouseCurve = GetBool(values, "DisableMouseCurve", defaultValue: false);
         DisableZoomHotkey = GetBool(values, "DisableZoomHotkey", defaultValue: false);
     }
@@ -124,11 +121,6 @@ internal sealed class AppConfig : IAppConfig
 ; Default on - with clipping enabled, you might see gray windows,
 ; if this app terminates unexpectedly
 ;DisableGreedyDraw=true
-
-; Disable DLL injection into managed windows
-; Defaults on - this enables additional cleanup, that is only necessary,
-; if Greedy Draw is enabled
-;DisableDllInjection=true
 
 ; Disable Windows pointer acceleration curve on pan deltas
 ; (default off = curve on, pan tracks cursor; on = raw HID deltas)

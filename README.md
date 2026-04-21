@@ -35,24 +35,16 @@ Turns your Windows desktop into an infinite, pannable, zoomable canvas. Middle-c
 
 **You can't just move windows off-screen.** Apps like Visual Studio detect they're off-screen and snap back. The workaround: clip them to an empty region via `SetWindowRgn` and park them 1px inside the nearest screen edge. The app thinks it's on-screen, but renders nothing.
 
-**You can't resize windows to zoom.** Resizing changes layout, not scale. Instead, we inject a native DLL into each process that hooks `GetDpiForWindow` and friends, returning a scaled DPI value. The app re-renders its content as if the monitor DPI changed. A watchdog thread in the DLL monitors the host process — if it dies, hooks are removed and windows restore automatically.
-
 
 ## Requirements
 
 - Windows 10/11
 - .NET 8.0+
-- MSVC (for native DpiHook.dll)
-- CMake 3.15+
 - NSIS (for installer, optional)
 
 ## Build
 
 ```bash
-# Native DLL
-cd native && cmake -B build -G "Visual Studio 17 2022" -A x64
-cmake --build build --config Release
-
 # C# app
 dotnet build
 

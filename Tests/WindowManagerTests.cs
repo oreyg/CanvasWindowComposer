@@ -10,7 +10,7 @@ public class WindowManagerTests
     {
         var canvas = new Canvas();
         var api = new FakeWindowApi();
-        var wm = new WindowManager(canvas, api, new DllInjector(), config ?? new FakeAppConfig(), new FakeInputRouter(), new FakeClock());
+        var wm = new WindowManager(canvas, api, config ?? new FakeAppConfig(), new FakeInputRouter(), new FakeClock());
         return (canvas, api, wm);
     }
 
