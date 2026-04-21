@@ -39,6 +39,14 @@ internal sealed class OverviewInputs
         else
             _input.ClearExtraPanSurfaces();
 
+        // Panning overlay is WS_EX_TRANSPARENT; without a low-level block a
+        // middle click during panning would reach whatever app is under the
+        // cursor (Chrome closes tabs, etc.).
+        if (to == OverviewMode.Panning)
+            _input.EnableMiddleButtonBlock();
+        else if (from == OverviewMode.Panning)
+            _input.DisableMiddleButtonBlock();
+
         // Esc closes Zooming via a global hotkey rather than form KeyDown:
         // only _passes[0] gets Activate() and keyboard focus can drift in
         // multi-monitor setups, so the form-level handler isn't reliable.

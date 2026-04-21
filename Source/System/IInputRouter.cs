@@ -48,4 +48,12 @@ internal interface IInputRouter
     bool Enabled { get; set; }
     void SetExtraPanSurfaces(IEnumerable<IntPtr> handles);
     void ClearExtraPanSurfaces();
+
+    /// <summary>
+    /// Install a system-wide block of middle-mouse-button clicks. Used while
+    /// the overview is panning: the overlay is WS_EX_TRANSPARENT, so without
+    /// this the MMB click would reach whatever app is under the cursor.
+    /// </summary>
+    void EnableMiddleButtonBlock();
+    void DisableMiddleButtonBlock();
 }

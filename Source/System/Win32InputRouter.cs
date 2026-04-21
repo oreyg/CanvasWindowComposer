@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using Windows.Win32.Foundation;
+using Windows.Win32.UI.WindowsAndMessaging;
 
 namespace CanvasDesktop;
 
@@ -27,6 +29,11 @@ internal sealed class Win32InputRouter : IInputRouter, IDisposable
     private bool _hasPendingPan;
     private bool _dragJustEnded;
     private bool _zoomPending;
+
+    // WH_MOUSE_LL hook state (EnableMiddleButtonBlock). The delegate is held
+    // in a field so it stays GC-rooted while the native hook references it.
+    private HOOKPROC? _middleBlockProc;
+    private UnhookWindowsHookExSafeHandle? _middleBlockHandle;
 
     public event Action? InputAvailable;
     public event Action? DragStarted;
@@ -158,8 +165,47 @@ internal sealed class Win32InputRouter : IInputRouter, IDisposable
         _mouse.ClearExtraPanSurfaces();
     }
 
+    /// <summary>
+    /// Install WH_MOUSE_LL on the calling (UI) thread. Blocks WM_MBUTTONDOWN
+    /// system-wide; matching WM_MBUTTONUP must pass through so any window
+    /// that received the down before Install can complete its release.
+    /// Idempotent.
+    /// </summary>
+    public void EnableMiddleButtonBlock()
+    {
+        if (_middleBlockHandle is { IsInvalid: false }) return;
+        _middleBlockProc = MiddleButtonHookCallback;
+        _middleBlockHandle = PInvoke.SetWindowsHookEx(
+            WINDOWS_HOOK_ID.WH_MOUSE_LL,
+            _middleBlockProc,
+            PInvoke.GetModuleHandle((string?)null),
+            0);
+        if (_middleBlockHandle.IsInvalid)
+        {
+            _middleBlockHandle.Dispose();
+            _middleBlockHandle = null;
+            _middleBlockProc = null;
+        }
+    }
+
+    public void DisableMiddleButtonBlock()
+    {
+        if (_middleBlockHandle == null) return;
+        _middleBlockHandle.Dispose();
+        _middleBlockHandle = null;
+        _middleBlockProc = null;
+    }
+
+    private LRESULT MiddleButtonHookCallback(int nCode, WPARAM wParam, LPARAM lParam)
+    {
+        if (nCode >= 0 && (uint)wParam.Value == PInvoke.WM_MBUTTONDOWN)
+            return (LRESULT)1;
+        return PInvoke.CallNextHookEx(HHOOK.Null, nCode, wParam, lParam);
+    }
+
     public void Dispose()
     {
+        DisableMiddleButtonBlock();
         _winEvents.Dispose();
         _mouse.Dispose();
         _msgWindow.Dispose();
