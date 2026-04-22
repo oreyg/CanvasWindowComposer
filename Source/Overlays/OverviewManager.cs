@@ -106,8 +106,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         _thumbnails.InvalidateShellCache();
 
         EnsurePasses();
-        foreach (var p in _passes)
-            p.Warmup();
+        WarmupPasses();
 
         if (wasVisible)
             TransitionTo(prev);
@@ -117,8 +116,24 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
     public void Warmup()
     {
         EnsurePasses();
+        WarmupPasses();
+    }
+
+    /// <summary>Initialize D3D11 per pass and push screen layout to the grid shader.</summary>
+    private void WarmupPasses()
+    {
+        var monitors = new System.Drawing.Rectangle[_passes.Count];
+        for (int i = 0; i < _passes.Count; i++)
+        {
+            var b = _passes[i].Screen.Bounds;
+            monitors[i] = new System.Drawing.Rectangle(b.X, b.Y, b.Width, b.Height);
+        }
+
         foreach (var p in _passes)
+        {
             p.Warmup();
+            p.Grid?.SetScreenLayout(p.OriginX, p.OriginY, p.Screen.Primary, monitors);
+        }
     }
 
     private void EnsurePasses()
@@ -237,8 +252,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
     private void ShowInternal()
     {
         EnsurePasses();
-        foreach (var p in _passes)
-            p.Warmup();
+        WarmupPasses();
 
         if (_mmcssHandle == IntPtr.Zero)
             _mmcssHandle = Mmcss.Begin("Window Manager");

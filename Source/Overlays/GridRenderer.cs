@@ -25,7 +25,12 @@ internal sealed class GridRenderer : IDisposable
     private ID3D11PixelShader? _pixelShader;
     private ID3D11VertexShader? _vertexShader;
     private ID3D11Buffer? _constantBuffer;
+    private ID3D11Buffer? _monitorBuffer;
+    private ID3D11ShaderResourceView? _monitorSrv;
     private int _width, _height;
+
+    private const int MonitorBufferCapacity = 16;
+    private const int MonitorStructBytes = 16;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct GridConstants
@@ -36,12 +41,14 @@ internal sealed class GridRenderer : IDisposable
         public float Time;
         public float DpiScale;
         public float PanAccumX, PanAccumY;
-        public float _pad0, _pad1;
+        public float PassOffX, PassOffY;
+        public int MonitorCount;
+        public int IsPrimary;
+        public int _pad0, _pad1;
     }
 
     private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
 
-    // Pre-compiled shader bytecode (compile once at startup)
     private static byte[]? _vsBytecode;
     private static byte[]? _psBytecode;
 
@@ -72,8 +79,20 @@ cbuffer GridCB : register(b0)
     float dpiScale;
     float panAccumX;
     float panAccumY;
-    float2 _pad;
+    float passOffX;
+    float passOffY;
+    int monitorCount;
+    int isPrimary;
+    int _pad0;
+    int _pad1;
 };
+
+struct MonitorRect
+{
+    float2 offset;
+    float2 size;
+};
+StructuredBuffer<MonitorRect> monitors : register(t0);
 
 struct VSOut
 {
@@ -210,8 +229,7 @@ float4 PSMain(VSOut input) : SV_Target
 {
     float2 screenPos = input.uv * float2(screenW, screenH);
 
-    // === World-space coordinate ===
-    float2 worldPos = screenPos / zoom + camPos;
+    float2 worldPos = (screenPos + float2(passOffX, passOffY)) / zoom + camPos;
 
     // === Adaptive grid spacing (doubles per zoom level) ===
     float logZoom = log2(zoom * 100.0 / 80.0);
@@ -229,8 +247,8 @@ float4 PSMain(VSOut input) : SV_Target
     float originWidth = max(0.15 / zoom, minPx * 0.5);
 
     float origin = saturate(
-        gridLine(worldPos.x, 1e6, originWidth) * step(abs(worldPos.x), originWidth * 3.0) +
-        gridLine(worldPos.y, 1e6, originWidth) * step(abs(worldPos.y), originWidth * 3.0));
+        gridLine(worldPos.x, 1e6, originWidth) +
+        gridLine(worldPos.y, 1e6, originWidth));
 
     float major = saturate(
         gridLine(worldPos.x, gridMajor, lineWidth) +
@@ -290,32 +308,31 @@ float4 PSMain(VSOut input) : SV_Target
         color += glow * fade;
     }
 
-    // Camera viewport frame — corner brackets showing what the screen will show on close
+    if (isPrimary != 0)
     {
-        float vw = screenW * zoom;
-        float vh = screenH * zoom;
-        float arm = min(vw, vh) * 0.025;
-        float lw = 3.0;
+        for (int mi = 0; mi < monitorCount; mi++)
+        {
+            float2 mOff  = monitors[mi].offset;
+            float2 mSize = monitors[mi].size;
 
-        float ox = (screenW - vw) * 0.5;
-        float oy = (screenH - vh) * 0.5;
-        float dL = abs(screenPos.x - ox);
-        float dR = abs(screenPos.x - ox - vw);
-        float dT = abs(screenPos.y - oy);
-        float dB = abs(screenPos.y - oy - vh);
+            float2 mOrigin = float2(screenW, screenH) * 0.5
+                            - mSize * zoom * 0.5
+                            + (mOff - float2(passOffX, passOffY)) * zoom;
+            float vw = mSize.x * zoom;
+            float vh = mSize.y * zoom;
+            float arm = min(vw, vh) * 0.025;
+            float lw = 3.0;
 
-        // Pixel relative to viewport rect (0,0 = top-left corner of frame)
-        float2 p = screenPos - float2(ox, oy);
-        // Distance from nearest edge, clamped inside the rect
-        float nearX = min(p.x, vw - p.x);
-        float nearY = min(p.y, vh - p.y);
-        bool inside = p.x >= 0 && p.x <= vw && p.y >= 0 && p.y <= vh;
-        // On edge and within arm length of a corner
-        float onEdgeX = step(nearX, lw) * step(nearY, arm);
-        float onEdgeY = step(nearY, lw) * step(nearX, arm);
-        float corners = inside ? saturate(onEdgeX + onEdgeY) : 0;
+            float2 p = screenPos - mOrigin;
+            float nearX = min(p.x, vw - p.x);
+            float nearY = min(p.y, vh - p.y);
+            bool inside = p.x >= 0 && p.x <= vw && p.y >= 0 && p.y <= vh;
+            float onEdgeX = step(nearX, lw) * step(nearY, arm);
+            float onEdgeY = step(nearY, lw) * step(nearX, arm);
+            float corners = inside ? saturate(onEdgeX + onEdgeY) : 0;
 
-        color += float3(0.0, 0.7, 1.0) * saturate(corners) * 0.4;
+            color += float3(0.0, 0.7, 1.0) * saturate(corners) * 0.4;
+        }
     }
 
 
@@ -348,6 +365,7 @@ float4 PSMain(VSOut input) : SV_Target
         CreateRenderTarget();
         if (!CreateShaders()) return false;
         CreateConstantBuffer();
+        CreateMonitorBuffer();
         return true;
     }
 
@@ -375,6 +393,28 @@ float4 PSMain(VSOut input) : SV_Target
             CpuAccessFlags.Write));
     }
 
+    private void CreateMonitorBuffer()
+    {
+        var desc = new BufferDescription
+        {
+            ByteWidth = (uint)(MonitorBufferCapacity * MonitorStructBytes),
+            BindFlags = BindFlags.ShaderResource,
+            Usage = ResourceUsage.Dynamic,
+            CPUAccessFlags = CpuAccessFlags.Write,
+            MiscFlags = ResourceOptionFlags.BufferStructured,
+            StructureByteStride = (uint)MonitorStructBytes
+        };
+        _monitorBuffer = _device!.CreateBuffer(desc);
+
+        var srvDesc = new ShaderResourceViewDescription
+        {
+            Format = Format.Unknown,
+            ViewDimension = ShaderResourceViewDimension.Buffer,
+            Buffer = new BufferShaderResourceView { FirstElement = 0, NumElements = (uint)MonitorBufferCapacity }
+        };
+        _monitorSrv = _device.CreateShaderResourceView(_monitorBuffer, srvDesc);
+    }
+
     public volatile bool DrawGrid = true;
 
     /// <summary>
@@ -389,14 +429,37 @@ float4 PSMain(VSOut input) : SV_Target
     private readonly System.Threading.ManualResetEventSlim _wakeEvent = new(false);
     private System.Threading.Thread? _renderThread;
 
-    // Camera state read by the render thread
     private volatile float _renderCamX, _renderCamY, _renderZoom;
-    private float _panAccumX, _panAccumY; // only accumulates pan, not zoom-induced cam changes
+    private float _panAccumX, _panAccumY;
+
+    private volatile float _passOffX, _passOffY;
+    private volatile int _isPrimary;
+    private readonly float[] _monitors = new float[MonitorBufferCapacity * 4];
+    private volatile int _monitorCount;
+    private readonly object _monitorsLock = new();
 
     public void SetDpiScale(float scale) => _dpiScale = scale;
     public void ResetClock() => _clock.Restart();
 
-    /// <summary>Accumulate pan movement (not zoom). Drives nebula parallax.</summary>
+    public void SetScreenLayout(int passOffX, int passOffY, bool isPrimary, System.Drawing.Rectangle[] monitors)
+    {
+        _passOffX = passOffX;
+        _passOffY = passOffY;
+        _isPrimary = isPrimary ? 1 : 0;
+        int count = Math.Min(monitors.Length, MonitorBufferCapacity);
+        lock (_monitorsLock)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                _monitors[i * 4 + 0] = monitors[i].X;
+                _monitors[i * 4 + 1] = monitors[i].Y;
+                _monitors[i * 4 + 2] = monitors[i].Width;
+                _monitors[i * 4 + 3] = monitors[i].Height;
+            }
+            _monitorCount = count;
+        }
+    }
+
     public void AccumulatePan(double dx, double dy)
     {
         _panAccumX += (float)dx;
@@ -496,7 +559,7 @@ float4 PSMain(VSOut input) : SV_Target
     {
         if (_context == null || _swapChain == null) return;
 
-        var mapped = _context.Map(_constantBuffer!, MapMode.WriteDiscard);
+        var cbMapped = _context.Map(_constantBuffer!, MapMode.WriteDiscard);
         var constants = new GridConstants
         {
             CamX = _renderCamX, CamY = _renderCamY,
@@ -504,10 +567,23 @@ float4 PSMain(VSOut input) : SV_Target
             ScreenW = _width, ScreenH = _height,
             Time = (float)_clock.Elapsed.TotalSeconds,
             DpiScale = _dpiScale,
-            PanAccumX = _panAccumX, PanAccumY = _panAccumY
+            PanAccumX = _panAccumX, PanAccumY = _panAccumY,
+            PassOffX = _passOffX, PassOffY = _passOffY,
+            MonitorCount = _monitorCount,
+            IsPrimary = _isPrimary
         };
-        Marshal.StructureToPtr(constants, mapped.DataPointer, false);
+        Marshal.StructureToPtr(constants, cbMapped.DataPointer, false);
         _context.Unmap(_constantBuffer!);
+
+        if (_monitorCount > 0)
+        {
+            var mapped = _context.Map(_monitorBuffer!, MapMode.WriteDiscard);
+            lock (_monitorsLock)
+            {
+                Marshal.Copy(_monitors, 0, mapped.DataPointer, _monitorCount * 4);
+            }
+            _context.Unmap(_monitorBuffer!);
+        }
 
         _context.OMSetRenderTargets(_rtv!);
         _context.RSSetViewport(0, 0, _width, _height);
@@ -517,6 +593,7 @@ float4 PSMain(VSOut input) : SV_Target
             _context.VSSetShader(_vertexShader);
             _context.PSSetShader(_pixelShader);
             _context.PSSetConstantBuffer(0, _constantBuffer);
+            _context.PSSetShaderResource(0, _monitorSrv!);
             _context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
             _context.Draw(FullscreenTriangleVertexCount, 0);
         }
@@ -539,6 +616,8 @@ float4 PSMain(VSOut input) : SV_Target
 
         _rtv?.Dispose();
         _constantBuffer?.Dispose();
+        _monitorSrv?.Dispose();
+        _monitorBuffer?.Dispose();
         _pixelShader?.Dispose();
         _vertexShader?.Dispose();
         _swapChain?.Dispose();
