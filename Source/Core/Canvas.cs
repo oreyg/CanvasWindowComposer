@@ -146,17 +146,6 @@ internal sealed class Canvas
         CameraChanged?.Invoke();
     }
 
-    /// <summary>Check if a window's projected screen rect overlaps with the screen.</summary>
-    public bool IsWindowOnScreen(IntPtr hWnd, int screenW, int screenH)
-    {
-        if (!_windows.TryGetValue(hWnd, out var world))
-            return false;
-
-        var r = WorldToScreen(world);
-        return r.X + r.W > 0 && r.X < screenW &&
-               r.Y + r.H > 0 && r.Y < screenH;
-    }
-
     public void ResetCamera()
     {
         _camX = 0;

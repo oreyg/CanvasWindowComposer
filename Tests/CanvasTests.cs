@@ -302,55 +302,6 @@ public class CanvasTests
         Assert.Equal(450, maxY);
     }
 
-    // ==================== ON-SCREEN CHECK ====================
-
-    [Fact]
-    public void IsWindowOnScreen_VisibleWindow_ReturnsTrue()
-    {
-        var canvas = new Canvas();
-        canvas.SetWindow((IntPtr)1, 100, 100, 400, 300);
-        Assert.True(canvas.IsWindowOnScreen((IntPtr)1, 1920, 1080));
-    }
-
-    [Fact]
-    public void IsWindowOnScreen_OffScreenWindow_ReturnsFalse()
-    {
-        var canvas = new Canvas();
-        canvas.SetWindow((IntPtr)1, 3000, 3000, 400, 300);
-        Assert.False(canvas.IsWindowOnScreen((IntPtr)1, 1920, 1080));
-    }
-
-    [Fact]
-    public void IsWindowOnScreen_PartiallyVisible_ReturnsTrue()
-    {
-        var canvas = new Canvas();
-        canvas.SetWindow((IntPtr)1, -200, -100, 400, 300);
-        Assert.True(canvas.IsWindowOnScreen((IntPtr)1, 1920, 1080));
-    }
-
-    [Fact]
-    public void IsWindowOnScreen_AtRightEdge_ReturnsFalse()
-    {
-        var canvas = new Canvas();
-        canvas.SetWindow((IntPtr)1, 1920, 500, 400, 300);
-        Assert.False(canvas.IsWindowOnScreen((IntPtr)1, 1920, 1080));
-    }
-
-    [Fact]
-    public void IsWindowOnScreen_JustInsideRightEdge_ReturnsTrue()
-    {
-        var canvas = new Canvas();
-        canvas.SetWindow((IntPtr)1, 1919, 500, 400, 300);
-        Assert.True(canvas.IsWindowOnScreen((IntPtr)1, 1920, 1080));
-    }
-
-    [Fact]
-    public void IsWindowOnScreen_UnknownWindow_ReturnsFalse()
-    {
-        var canvas = new Canvas();
-        Assert.False(canvas.IsWindowOnScreen((IntPtr)99, 1920, 1080));
-    }
-
     // ==================== VIEWPORT ====================
 
     [Fact]
