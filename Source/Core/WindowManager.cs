@@ -205,8 +205,8 @@ internal sealed class WindowManager : IDisposable
     /// and applies the batch synchronously on the calling thread. Use this when
     /// the caller depends on the windows being at their final positions before
     /// the next visible frame (e.g. just before the overview overlay hides).
-    /// Drops any worker batch that hasn't been applied yet so it can't stomp
-    /// the sync result.
+    /// Cancels any in-flight worker batch so the sync run doesn't have to wait
+    /// for it.
     /// </summary>
     public void ReprojectSync(bool isAsync = false, bool isTransient = false)
     {

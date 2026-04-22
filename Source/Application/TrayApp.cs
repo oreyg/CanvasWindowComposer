@@ -37,6 +37,7 @@ internal sealed class TrayApp : ApplicationContext
         _config.Load();
         _config.StartObservingChanges();
         GridRenderer.CompileShaders();
+        MinimapRenderer.CompileShaders();
 
         var winApi = new Win32WindowApi(_screens);
         _vds = new VirtualDesktopService();

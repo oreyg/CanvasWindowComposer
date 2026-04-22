@@ -1,14 +1,13 @@
 using System;
 using System.Drawing;
-using System.Drawing.Drawing2D;
 using System.Windows.Forms;
 
 namespace CanvasDesktop;
 
 /// <summary>
-/// Semi-transparent minimap overlay that appears in the bottom-right corner
-/// when the canvas is transformed. Shows all windows as rectangles and
-/// the camera viewport.
+/// Thin shell around <see cref="MinimapRenderer"/>. Canvas events translate
+/// to a single <c>UpdateSnapshot</c> on the UI thread; everything else —
+/// drawing and fade animation — runs on the render thread.
 /// </summary>
 internal sealed class MinimapOverlay : Form
 {
@@ -16,26 +15,31 @@ internal sealed class MinimapOverlay : Form
     private const int MapHeight = 160;
     private const int ScreenMargin = 20;
     private const int InnerPadding = 8;
-    private const double ExtentsPadding = 0.10; // 10% padding around extents
-    private const int FadeDelayMs = 2000;
-    private const int FadeTickIntervalMs = 100;
-    private const double FadeOpacityStep = 0.15;
-    private const double FadeOpacityThreshold = 0.05;
     private const double MinimapOpacity = 0.75;
-    private const double MinimapBorderPx = 2.0;
-    private const int MinRectSizePx = 2;
 
-    private readonly Canvas _canvas;
-    private readonly IScreens _screens;
-    private readonly Timer _fadeTimer;
-    private int _fadeTicksRemaining;
+    // Fade timing — driven on the render thread by OnFrameTick, mirroring the
+    // overview's inertia pattern (render thread computes, UI thread applies).
+    private const long HoldMs = 2000;
+    private const long FadeMs = 500;
+    private const double OpacityQuantum = 0.02;
 
-    // WS_EX flags for click-through, topmost, tool window
     private const int WS_EX_LAYERED = 0x80000;
     private const int WS_EX_TRANSPARENT = 0x20;
     private const int WS_EX_TOOLWINDOW = 0x80;
     private const int WS_EX_TOPMOST = 0x8;
     private const int WS_EX_NOACTIVATE = 0x08000000;
+
+    private readonly Canvas _canvas;
+    private readonly IScreens _screens;
+    private readonly MinimapRenderer _renderer = new();
+    private bool _rendererInitialized;
+
+    // Fade state read on render thread, written on UI thread.
+    private long _touchTicks;
+    // Last value we pushed to Form.Opacity — used so OnFrameTick only
+    // BeginInvokes when the value changes by more than a quantum.
+    private double _lastAppliedOpacity = -1;
+    private int _fadeUpdateQueued;
 
     protected override CreateParams CreateParams
     {
@@ -62,18 +66,27 @@ internal sealed class MinimapOverlay : Form
         Size = new Size(MapWidth + InnerPadding * 2, MapHeight + InnerPadding * 2);
         BackColor = Color.Black;
         Opacity = MinimapOpacity;
-        DoubleBuffered = true;
 
         PositionOnScreen();
-
-        _fadeTimer = new Timer { Interval = FadeTickIntervalMs };
-        _fadeTimer.Tick += OnFadeTick;
 
         canvas.CameraChanged    += NotifyCanvasChanged;
         canvas.CollapseChanged  += OnWindowStateChanged;
         canvas.MaximizeChanged  += OnWindowStateChanged;
         input.DragStarted       += BringToFront;
         desktops.AfterStateLoaded += ShowBriefly;
+    }
+
+    private void EnsureRendererInitialized()
+    {
+        if (_rendererInitialized) return;
+        _ = Handle;
+        MinimapRenderer.CompileShaders();
+        _rendererInitialized = _renderer.Initialize(Handle, Width, Height);
+        if (_rendererInitialized)
+        {
+            _renderer.OnFrameTick = OnRendererFrameTick;
+            _renderer.StartThread();
+        }
     }
 
     private void OnWindowStateChanged(IntPtr hWnd)
@@ -84,44 +97,92 @@ internal sealed class MinimapOverlay : Form
     /// <summary>Force-show the minimap briefly (e.g., on desktop switch).</summary>
     public void ShowBriefly()
     {
-        PositionOnScreen();
-        if (!Visible) Show();
-        Invalidate();
-        Update();
-
-        _fadeTicksRemaining = FadeDelayMs / 100;
-        Opacity = MinimapOpacity;
-        _fadeTimer.Start();
+        NotifyCanvasChanged();
     }
 
-    /// <summary>Call when the canvas changes. Shows the minimap and resets the fade timer.</summary>
+    /// <summary>Push a snapshot to the renderer and touch the fade timer.</summary>
     public void NotifyCanvasChanged()
     {
         PositionOnScreen();
-        if (!Visible) Show();
-        Invalidate();
-        Update(); // force immediate repaint — Invalidate alone gets starved by input messages
+        EnsureRendererInitialized();
 
-        // Reset fade timer
-        _fadeTicksRemaining = FadeDelayMs / 100;
-        Opacity = MinimapOpacity;
-        _fadeTimer.Start();
+        PushSnapshot();
+
+        _touchTicks = Environment.TickCount64;
+        if (!Visible)
+        {
+            Opacity = MinimapOpacity;
+            _lastAppliedOpacity = MinimapOpacity;
+            Show();
+            _renderer.Start();
+        }
     }
 
-    private void OnFadeTick(object? sender, EventArgs e)
+    private void PushSnapshot()
     {
-        _fadeTicksRemaining--;
+        var primary = _screens.PrimaryBounds;
+        var viewport = _canvas.GetViewport(primary.Width, primary.Height);
+        var extents = _canvas.GetWorldExtents();
 
-        if (_fadeTicksRemaining <= 0)
+        _renderer.UpdateSnapshot(
+            _canvas.Windows,
+            extents,
+            viewport,
+            mapOriginX: InnerPadding,
+            mapOriginY: InnerPadding,
+            mapW: MapWidth,
+            mapH: MapHeight);
+    }
+
+    /// <summary>
+    /// Fires on the renderer's thread after each Present. Computes the fade
+    /// alpha from elapsed time since the last touch and queues a single UI
+    /// update when the value drifts past a quantum.
+    /// </summary>
+    private void OnRendererFrameTick()
+    {
+        long elapsed = Environment.TickCount64 - _touchTicks;
+        double target;
+        if (elapsed < HoldMs)
         {
-            // Fade out over ~500ms (5 ticks)
-            Opacity -= FadeOpacityStep;
-            if (Opacity <= FadeOpacityThreshold)
-            {
-                _fadeTimer.Stop();
-                Hide();
-            }
+            target = MinimapOpacity;
         }
+        else if (elapsed < HoldMs + FadeMs)
+        {
+            double t = (elapsed - HoldMs) / (double)FadeMs;
+            target = MinimapOpacity * (1.0 - t);
+        }
+        else
+        {
+            target = 0.0;
+        }
+
+        if (Math.Abs(target - _lastAppliedOpacity) < OpacityQuantum && target > 0.0)
+            return;
+
+        // Coalesce: only one pending BeginInvoke at a time.
+        if (System.Threading.Interlocked.Exchange(ref _fadeUpdateQueued, 1) != 0)
+            return;
+        if (!IsHandleCreated) { _fadeUpdateQueued = 0; return; }
+
+        BeginInvoke(() =>
+        {
+            _fadeUpdateQueued = 0;
+            ApplyFadeOpacity(target);
+        });
+    }
+
+    private void ApplyFadeOpacity(double value)
+    {
+        value = Math.Clamp(value, 0.0, 1.0);
+        _lastAppliedOpacity = value;
+        if (value <= 0.0)
+        {
+            if (Visible) Hide();
+            _renderer.Stop();
+            return;
+        }
+        Opacity = value;
     }
 
     private void PositionOnScreen()
@@ -133,78 +194,15 @@ internal sealed class MinimapOverlay : Form
         );
     }
 
-    protected override void OnPaint(PaintEventArgs e)
+    protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        base.OnPaint(e);
-        var g = e.Graphics;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.Clear(Color.FromArgb(30, 30, 30));
-
-        var extents = _canvas.GetWorldExtents();
-        if (extents == null) return;
-
-        var (minX, minY, maxX, maxY) = extents.Value;
-
-        // Include the viewport in the extents
-        var screen = _screens.PrimaryBounds;
-        var viewport = _canvas.GetViewport(screen.Width, screen.Height);
-        minX = Math.Min(minX, viewport.x);
-        minY = Math.Min(minY, viewport.y);
-        maxX = Math.Max(maxX, viewport.x + viewport.w);
-        maxY = Math.Max(maxY, viewport.y + viewport.h);
-
-        // Add 10% padding
-        double worldW = maxX - minX;
-        double worldH = maxY - minY;
-        double padX = worldW * ExtentsPadding;
-        double padY = worldH * ExtentsPadding;
-        minX -= padX; minY -= padY;
-        maxX += padX; maxY += padY;
-        worldW = maxX - minX;
-        worldH = maxY - minY;
-
-        if (worldW < 1 || worldH < 1) return;
-
-        // Compute scale to fit into minimap area
-        double scaleX = (MapWidth - MinimapBorderPx) / worldW;
-        double scaleY = (MapHeight - MinimapBorderPx) / worldH;
-        double scale = Math.Min(scaleX, scaleY);
-
-        // Center in minimap
-        double drawW = worldW * scale;
-        double drawH = worldH * scale;
-        double offsetX = InnerPadding + (MapWidth - drawW) / 2;
-        double offsetY = InnerPadding + (MapHeight - drawH) / 2;
-
-        // Draw window rects
-        using var windowBrush = new SolidBrush(Color.FromArgb(100, 80, 160, 255));
-        using var windowPen = new Pen(Color.FromArgb(180, 100, 180, 255), 1f);
-
-        foreach (var (_, world) in _canvas.Windows)
+        if (e.CloseReason == CloseReason.UserClosing)
         {
-            if (world.State != CanvasDesktop.WindowState.Normal) continue;
-            float rx = (float)(offsetX + (world.X - minX) * scale);
-            float ry = (float)(offsetY + (world.Y - minY) * scale);
-            float rw = (float)(world.W * scale);
-            float rh = (float)(world.H * scale);
-
-            if (rw < MinRectSizePx) rw = MinRectSizePx;
-            if (rh < MinRectSizePx) rh = MinRectSizePx;
-
-            g.FillRectangle(windowBrush, rx, ry, rw, rh);
-            g.DrawRectangle(windowPen, rx, ry, rw, rh);
+            e.Cancel = true;
+            return;
         }
 
-        // Draw viewport
-        using var viewportPen = new Pen(Color.FromArgb(200, 255, 200, 50), 1.5f);
-        float vx = (float)(offsetX + (viewport.x - minX) * scale);
-        float vy = (float)(offsetY + (viewport.y - minY) * scale);
-        float vw = (float)(viewport.w * scale);
-        float vh = (float)(viewport.h * scale);
-        g.DrawRectangle(viewportPen, vx, vy, vw, vh);
-
-        // Draw border
-        using var borderPen = new Pen(Color.FromArgb(100, 255, 255, 255), 1f);
-        g.DrawRectangle(borderPen, InnerPadding, InnerPadding, MapWidth - 1, MapHeight - 1);
+        _renderer.Dispose();
+        base.OnFormClosing(e);
     }
 }

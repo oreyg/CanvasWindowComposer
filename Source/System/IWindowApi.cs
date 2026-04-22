@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace CanvasDesktop;
 
@@ -33,7 +34,13 @@ internal interface IWindowApi
     void SetWindowPosition(IntPtr hWnd, int x, int y, int w, int h, uint flags);
     void ClipWindow(IntPtr hWnd);
     void UnclipWindow(IntPtr hWnd);
-    void BatchMove(List<BatchMoveItem> items, bool isAsync, bool isTransient);
+    /// <summary>
+    /// Apply a batch of window position changes. If <paramref name="ct"/> is
+    /// cancelled during the batch, aborts cleanly without finalizing the batch —
+    /// partially-applied moves are OK because the next scheduled batch will
+    /// reconcile to the final state.
+    /// </summary>
+    void BatchMove(List<BatchMoveItem> items, bool isAsync, bool isTransient, CancellationToken ct = default);
 
     // Enumeration
     void EnumWindows(Func<IntPtr, bool> callback);

@@ -84,12 +84,13 @@ internal sealed class FakeWindowApi : IWindowApi
 
     public void UnclipWindow(IntPtr hWnd) => ClippedWindows.Remove(hWnd);
 
-    public void BatchMove(List<BatchMoveItem> items, bool isAsync, bool isTransient)
+    public void BatchMove(List<BatchMoveItem> items, bool isAsync, bool isTransient, System.Threading.CancellationToken ct = default)
     {
         LastBatch.Clear();
         LastBatch.AddRange(items);
         foreach (var item in items)
         {
+            if (ct.IsCancellationRequested) return;
             if (Windows.TryGetValue(item.HWnd, out var win))
             {
                 var r = item.Rect;
