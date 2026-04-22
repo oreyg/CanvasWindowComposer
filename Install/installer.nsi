@@ -1,6 +1,6 @@
 !include "MUI2.nsh"
 
-!define VERSION "1.10.1"
+!define VERSION "1.11.0"
 
 ; --- General ---
 Name "Canvas Window Composer"
