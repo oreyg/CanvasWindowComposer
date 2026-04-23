@@ -23,7 +23,7 @@ internal sealed class MinimapRenderer : IDisposable
 
     // Up to 256 windows shown. Anything past that is dropped silently — a
     // minimap that dense isn't useful anyway.
-    private const int WindowBufferCapacity = 256;
+    private const int WindowBufferCapacity = 32700;
     private const int WindowStructBytes = 16; // two float2 = (min, max)
 
     private ID3D11Device? _device;
@@ -128,24 +128,22 @@ float4 PSMain(VSOut input) : SV_Target
     {
         color = float3(0.078, 0.078, 0.078);
 
-        // Windows — rounded-rect SDF, AA on the boundary.
+        // Windows are iterated topmost-first (matching canvas z-order). First
+        // window containing the pixel wins — higher windows visually occlude
+        // the ones below.
         const float cornerRadius = 2.5;
-        float fill = 0.0;
-        float edge = 0.0;
+        float3 winFill = float3(0.31, 0.63, 1.0) * 0.55;
+        float3 winEdge = float3(0.39, 0.71, 1.0);
         for (int i = 0; i < windowCount; i++)
         {
             MapRect w = windows[i];
             float sd = sdfRoundedRect(mapPos, w.mn, w.mx, cornerRadius);
-            // Fill inside, smooth AA across the boundary.
+            if (sd >= 0.5) continue; // fully outside this window (with AA margin)
             float f = 1.0 - smoothstep(-0.5, 0.5, sd);
-            fill = max(fill, f);
-            // Edge: thin band centred on the boundary.
             float e = 1.0 - smoothstep(0.0, 1.5, abs(sd + 0.75));
-            edge = max(edge, e);
+            color = lerp(color, lerp(winFill, winEdge, e), f);
+            break;
         }
-        float3 winFill = float3(0.31, 0.63, 1.0) * 0.4;
-        float3 winEdge = float3(0.39, 0.71, 1.0);
-        color = lerp(color, lerp(winFill, winEdge, edge), fill);
 
         // Viewport outline (sharp corners).
         float2 vmn = viewportRect.xy;
@@ -170,10 +168,14 @@ float4 PSMain(VSOut input) : SV_Target
 }
 ";
 
-    public bool Initialize(IntPtr hwnd, int width, int height)
+    public bool Initialize(IntPtr hwnd, int width, int height, int mapOriginX, int mapOriginY, int mapW, int mapH)
     {
         _width = width;
         _height = height;
+        _mapOriginX = mapOriginX;
+        _mapOriginY = mapOriginY;
+        _mapW = mapW;
+        _mapH = mapH;
 
         var swapDesc = new SwapChainDescription
         {
@@ -245,7 +247,6 @@ float4 PSMain(VSOut input) : SV_Target
         _windowsSrv = _device.CreateShaderResourceView(_windowsBuffer, srvDesc);
     }
 
-    public volatile bool DrawMinimap = true;
     public Action? OnFrameTick;
 
     private volatile bool _running;
@@ -254,54 +255,46 @@ float4 PSMain(VSOut input) : SV_Target
     private readonly System.Threading.ManualResetEventSlim _wakeEvent = new(false);
     private System.Threading.Thread? _renderThread;
 
+    // Fixed from Initialize. Set once before any render, so no volatile.
+    private int _mapOriginX, _mapOriginY, _mapW, _mapH;
+
     // Shader-facing state (UI thread writes, render thread reads).
-    private volatile int _mapOriginX, _mapOriginY, _mapW, _mapH;
     private volatile float _vpMinX, _vpMinY, _vpMaxX, _vpMaxY;
     private readonly float[] _windowRects = new float[WindowBufferCapacity * 4];
     private volatile int _windowCount;
     private readonly object _windowsLock = new();
 
     /// <summary>
-    /// Push a fresh snapshot: world extents, viewport, windows → projected to
-    /// map-local pixel coords. Called from the UI thread.
+    /// Project the canvas into map-pixel rects and hand them to the renderer.
+    /// Called from the UI thread; the render thread picks up the new data on
+    /// the next vsync. <paramref name="windows"/> should be topmost-first so
+    /// the shader's first-hit wins matches OS z-order.
     /// </summary>
     public void UpdateSnapshot(
-        IReadOnlyDictionary<IntPtr, WorldRect> windows,
+        IReadOnlyList<WorldRect> windows,
         (double minX, double minY, double maxX, double maxY)? extents,
         (double x, double y, double w, double h) viewport,
-        int mapOriginX, int mapOriginY, int mapW, int mapH,
         double extentsPadding = 0.10,
         int minRectSizePx = 2)
     {
-        _mapOriginX = mapOriginX;
-        _mapOriginY = mapOriginY;
-        _mapW = mapW;
-        _mapH = mapH;
-
-        // Combined frame = world extents ∪ viewport, with padding.
-        double minX, minY, maxX, maxY;
-        if (extents != null)
+        // Frame = extents ∪ viewport, padded. If there are no windows yet,
+        // viewport alone defines the frame.
+        double minX = viewport.x;
+        double minY = viewport.y;
+        double maxX = viewport.x + viewport.w;
+        double maxY = viewport.y + viewport.h;
+        if (extents is var (eMinX, eMinY, eMaxX, eMaxY))
         {
-            var e = extents.Value;
-            minX = Math.Min(e.minX, viewport.x);
-            minY = Math.Min(e.minY, viewport.y);
-            maxX = Math.Max(e.maxX, viewport.x + viewport.w);
-            maxY = Math.Max(e.maxY, viewport.y + viewport.h);
-        }
-        else
-        {
-            minX = viewport.x;
-            minY = viewport.y;
-            maxX = viewport.x + viewport.w;
-            maxY = viewport.y + viewport.h;
+            minX = Math.Min(minX, eMinX);
+            minY = Math.Min(minY, eMinY);
+            maxX = Math.Max(maxX, eMaxX);
+            maxY = Math.Max(maxY, eMaxY);
         }
 
         double worldW = maxX - minX;
         double worldH = maxY - minY;
-        double padX = worldW * extentsPadding;
-        double padY = worldH * extentsPadding;
-        minX -= padX; minY -= padY;
-        maxX += padX; maxY += padY;
+        minX -= worldW * extentsPadding; maxX += worldW * extentsPadding;
+        minY -= worldH * extentsPadding; maxY += worldH * extentsPadding;
         worldW = maxX - minX;
         worldH = maxY - minY;
 
@@ -311,14 +304,9 @@ float4 PSMain(VSOut input) : SV_Target
             return;
         }
 
-        double scaleX = (mapW - 2) / worldW;
-        double scaleY = (mapH - 2) / worldH;
-        double scale = Math.Min(scaleX, scaleY);
-
-        double drawW = worldW * scale;
-        double drawH = worldH * scale;
-        double offX = (mapW - drawW) / 2;
-        double offY = (mapH - drawH) / 2;
+        double scale = Math.Min((_mapW - 2) / worldW, (_mapH - 2) / worldH);
+        double offX = (_mapW - worldW * scale) / 2;
+        double offY = (_mapH - worldH * scale) / 2;
 
         _vpMinX = (float)(offX + (viewport.x - minX) * scale);
         _vpMinY = (float)(offY + (viewport.y - minY) * scale);
@@ -328,10 +316,9 @@ float4 PSMain(VSOut input) : SV_Target
         lock (_windowsLock)
         {
             int count = 0;
-            foreach (var kv in windows)
+            foreach (var w in windows)
             {
                 if (count >= WindowBufferCapacity) break;
-                var w = kv.Value;
                 if (w.State != WindowState.Normal) continue;
 
                 float mnX = (float)(offX + (w.X - minX) * scale);
@@ -341,10 +328,11 @@ float4 PSMain(VSOut input) : SV_Target
                 if (mxX - mnX < minRectSizePx) mxX = mnX + minRectSizePx;
                 if (mxY - mnY < minRectSizePx) mxY = mnY + minRectSizePx;
 
-                _windowRects[count * 4 + 0] = mnX;
-                _windowRects[count * 4 + 1] = mnY;
-                _windowRects[count * 4 + 2] = mxX;
-                _windowRects[count * 4 + 3] = mxY;
+                int o = count * 4;
+                _windowRects[o]     = mnX;
+                _windowRects[o + 1] = mnY;
+                _windowRects[o + 2] = mxX;
+                _windowRects[o + 3] = mxY;
                 count++;
             }
             _windowCount = count;
@@ -448,19 +436,12 @@ float4 PSMain(VSOut input) : SV_Target
         _context.OMSetRenderTargets(_rtv!);
         _context.RSSetViewport(0, 0, _width, _height);
 
-        if (DrawMinimap)
-        {
-            _context.VSSetShader(_vertexShader);
-            _context.PSSetShader(_pixelShader);
-            _context.PSSetConstantBuffer(0, _constantBuffer);
-            _context.PSSetShaderResource(0, _windowsSrv!);
-            _context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
-            _context.Draw(FullscreenTriangleVertexCount, 0);
-        }
-        else
-        {
-            _context.ClearRenderTargetView(_rtv!, new Vortice.Mathematics.Color4(0, 0, 0, 0));
-        }
+        _context.VSSetShader(_vertexShader);
+        _context.PSSetShader(_pixelShader);
+        _context.PSSetConstantBuffer(0, _constantBuffer);
+        _context.PSSetShaderResource(0, _windowsSrv!);
+        _context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
+        _context.Draw(FullscreenTriangleVertexCount, 0);
 
         _swapChain.Present(VsyncInterval, PresentFlags.None);
         OnFrameTick?.Invoke();

@@ -1,13 +1,15 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
+using System.Threading;
 using System.Windows.Forms;
 
 namespace CanvasDesktop;
 
 /// <summary>
 /// Thin shell around <see cref="MinimapRenderer"/>. Canvas events translate
-/// to a single <c>UpdateSnapshot</c> on the UI thread; everything else —
-/// drawing and fade animation — runs on the render thread.
+/// to a single <c>UpdateSnapshot</c> on the UI thread; drawing and fade
+/// timing run on the render thread.
 /// </summary>
 internal sealed class MinimapOverlay : Form
 {
@@ -17,8 +19,8 @@ internal sealed class MinimapOverlay : Form
     private const int InnerPadding = 8;
     private const double MinimapOpacity = 0.75;
 
-    // Fade timing — driven on the render thread by OnFrameTick, mirroring the
-    // overview's inertia pattern (render thread computes, UI thread applies).
+    // Fade: hold full for HoldMs, then linear ramp to 0 over FadeMs. Driven on
+    // the render thread via OnFrameTick; mirrors the overview's inertia tick.
     private const long HoldMs = 2000;
     private const long FadeMs = 500;
     private const double OpacityQuantum = 0.02;
@@ -32,14 +34,17 @@ internal sealed class MinimapOverlay : Form
     private readonly Canvas _canvas;
     private readonly IScreens _screens;
     private readonly MinimapRenderer _renderer = new();
+    private readonly Action _applyFadeOnUi;
     private bool _rendererInitialized;
 
-    // Fade state read on render thread, written on UI thread.
     private long _touchTicks;
-    // Last value we pushed to Form.Opacity — used so OnFrameTick only
-    // BeginInvokes when the value changes by more than a quantum.
     private double _lastAppliedOpacity = -1;
     private int _fadeUpdateQueued;
+
+    // Scratch buffer reused across snapshots, refilled per snapshot by
+    // sorting Canvas.Windows by WorldRect.ZOrder descending (topmost first).
+    private readonly List<WorldRect> _orderedWindows = new();
+    private static readonly Comparison<WorldRect> ZOrderDescending = (a, b) => b.ZOrder.CompareTo(a.ZOrder);
 
     protected override CreateParams CreateParams
     {
@@ -58,6 +63,7 @@ internal sealed class MinimapOverlay : Form
     {
         _canvas = canvas;
         _screens = screens ?? WinFormsScreens.Instance;
+        _applyFadeOnUi = ApplyFadeOnUi;
 
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
@@ -69,44 +75,31 @@ internal sealed class MinimapOverlay : Form
 
         PositionOnScreen();
 
-        canvas.CameraChanged    += NotifyCanvasChanged;
-        canvas.CollapseChanged  += OnWindowStateChanged;
-        canvas.MaximizeChanged  += OnWindowStateChanged;
-        input.DragStarted       += BringToFront;
-        desktops.AfterStateLoaded += ShowBriefly;
+        canvas.CameraChanged       += NotifyCanvasChanged;
+        canvas.CollapseChanged     += _ => NotifyCanvasChanged();
+        canvas.MaximizeChanged     += _ => NotifyCanvasChanged();
+        canvas.FrontChanged        += _ => NotifyCanvasChanged();
+        input.DragStarted          += BringToFront;
+        desktops.AfterStateLoaded  += NotifyCanvasChanged;
     }
 
-    private void EnsureRendererInitialized()
-    {
-        if (_rendererInitialized) return;
-        _ = Handle;
-        MinimapRenderer.CompileShaders();
-        _rendererInitialized = _renderer.Initialize(Handle, Width, Height);
-        if (_rendererInitialized)
-        {
-            _renderer.OnFrameTick = OnRendererFrameTick;
-            _renderer.StartThread();
-        }
-    }
-
-    private void OnWindowStateChanged(IntPtr hWnd)
-    {
-        NotifyCanvasChanged();
-    }
-
-    /// <summary>Force-show the minimap briefly (e.g., on desktop switch).</summary>
-    public void ShowBriefly()
-    {
-        NotifyCanvasChanged();
-    }
-
-    /// <summary>Push a snapshot to the renderer and touch the fade timer.</summary>
+    /// <summary>Called on canvas changes + by <see cref="DesktopStateCache"/> after restore.</summary>
     public void NotifyCanvasChanged()
     {
         PositionOnScreen();
         EnsureRendererInitialized();
 
-        PushSnapshot();
+        _orderedWindows.Clear();
+        foreach (var kv in _canvas.Windows)
+            if (kv.Value.State == CanvasDesktop.WindowState.Normal)
+                _orderedWindows.Add(kv.Value);
+        _orderedWindows.Sort(ZOrderDescending);
+
+        var primary = _screens.PrimaryBounds;
+        _renderer.UpdateSnapshot(
+            _orderedWindows,
+            _canvas.GetWorldExtents(),
+            _canvas.GetViewport(primary.Width, primary.Height));
 
         _touchTicks = Environment.TickCount64;
         if (!Visible)
@@ -118,71 +111,51 @@ internal sealed class MinimapOverlay : Form
         }
     }
 
-    private void PushSnapshot()
+    private void EnsureRendererInitialized()
     {
-        var primary = _screens.PrimaryBounds;
-        var viewport = _canvas.GetViewport(primary.Width, primary.Height);
-        var extents = _canvas.GetWorldExtents();
-
-        _renderer.UpdateSnapshot(
-            _canvas.Windows,
-            extents,
-            viewport,
-            mapOriginX: InnerPadding,
-            mapOriginY: InnerPadding,
-            mapW: MapWidth,
-            mapH: MapHeight);
+        if (_rendererInitialized) return;
+        _ = Handle; // force HWND
+        MinimapRenderer.CompileShaders();
+        _rendererInitialized = _renderer.Initialize(Handle, Width, Height,
+            mapOriginX: InnerPadding, mapOriginY: InnerPadding, mapW: MapWidth, mapH: MapHeight);
+        if (_rendererInitialized)
+        {
+            _renderer.OnFrameTick = OnRendererFrameTick;
+            _renderer.StartThread();
+        }
     }
 
     /// <summary>
-    /// Fires on the renderer's thread after each Present. Computes the fade
-    /// alpha from elapsed time since the last touch and queues a single UI
-    /// update when the value drifts past a quantum.
+    /// Render-thread tick. Coalesces into a single pending BeginInvoke — the
+    /// UI handler recomputes the target so it isn't stale if the UI was busy.
     /// </summary>
     private void OnRendererFrameTick()
     {
-        long elapsed = Environment.TickCount64 - _touchTicks;
-        double target;
-        if (elapsed < HoldMs)
-        {
-            target = MinimapOpacity;
-        }
-        else if (elapsed < HoldMs + FadeMs)
-        {
-            double t = (elapsed - HoldMs) / (double)FadeMs;
-            target = MinimapOpacity * (1.0 - t);
-        }
-        else
-        {
-            target = 0.0;
-        }
-
-        if (Math.Abs(target - _lastAppliedOpacity) < OpacityQuantum && target > 0.0)
-            return;
-
-        // Coalesce: only one pending BeginInvoke at a time.
-        if (System.Threading.Interlocked.Exchange(ref _fadeUpdateQueued, 1) != 0)
-            return;
-        if (!IsHandleCreated) { _fadeUpdateQueued = 0; return; }
-
-        BeginInvoke(() =>
-        {
-            _fadeUpdateQueued = 0;
-            ApplyFadeOpacity(target);
-        });
+        if (!IsHandleCreated) return;
+        if (Interlocked.Exchange(ref _fadeUpdateQueued, 1) != 0) return;
+        BeginInvoke(_applyFadeOnUi);
     }
 
-    private void ApplyFadeOpacity(double value)
+    private void ApplyFadeOnUi()
     {
-        value = Math.Clamp(value, 0.0, 1.0);
-        _lastAppliedOpacity = value;
-        if (value <= 0.0)
+        _fadeUpdateQueued = 0;
+
+        long elapsed = Environment.TickCount64 - _touchTicks;
+        double fadeProgress = Math.Clamp((elapsed - HoldMs) / (double)FadeMs, 0.0, 1.0);
+        double target = MinimapOpacity * (1.0 - fadeProgress);
+
+        if (target > 0.0 && Math.Abs(target - _lastAppliedOpacity) < OpacityQuantum) return;
+
+        _lastAppliedOpacity = target;
+        if (target <= 0.0)
         {
             if (Visible) Hide();
             _renderer.Stop();
-            return;
         }
-        Opacity = value;
+        else
+        {
+            Opacity = target;
+        }
     }
 
     private void PositionOnScreen()

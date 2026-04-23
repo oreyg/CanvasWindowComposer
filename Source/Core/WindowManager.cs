@@ -97,6 +97,7 @@ internal sealed class WindowManager : IDisposable
         input.WindowDestroyed += OnWindowDestroyedEvent;
         input.WindowShown     += OnWindowShownEvent;
         input.WindowMoved     += OnWindowMovedEvent;
+        input.WindowFocused   += OnWindowFocusedEvent;
         input.AltTabStarted   += OnAltTabStarted;
         input.AltTabEnded     += OnAltTabEnded;
     }
@@ -173,6 +174,11 @@ internal sealed class WindowManager : IDisposable
     {
         if (_canvas.HasWindow(hWnd))
             ReconcileWindow(hWnd);
+    }
+
+    private void OnWindowFocusedEvent(IntPtr hWnd)
+    {
+        _canvas.BringToForeground(hWnd);
     }
 
     private void OnAltTabStarted()
