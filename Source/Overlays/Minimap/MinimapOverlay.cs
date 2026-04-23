@@ -57,7 +57,10 @@ internal sealed class MinimapOverlay : Form
         }
     }
 
-    protected override bool ShowWithoutActivation => true;
+    protected override bool ShowWithoutActivation
+    {
+        get { return true; }
+    }
 
     public MinimapOverlay(Canvas canvas, IInputRouter input, DesktopStateCache desktops, IScreens? screens = null)
     {
@@ -78,7 +81,7 @@ internal sealed class MinimapOverlay : Form
         canvas.CameraChanged       += NotifyCanvasChanged;
         canvas.CollapseChanged     += _ => NotifyCanvasChanged();
         canvas.MaximizeChanged     += _ => NotifyCanvasChanged();
-        canvas.FrontChanged        += _ => NotifyCanvasChanged();
+        canvas.FrontChanged        += _ => RefreshSnapshotIfVisible();
         input.DragStarted          += BringToFront;
         desktops.AfterStateLoaded  += NotifyCanvasChanged;
     }
@@ -88,7 +91,31 @@ internal sealed class MinimapOverlay : Form
     {
         PositionOnScreen();
         EnsureRendererInitialized();
+        RebuildSnapshot();
 
+        _touchTicks = Environment.TickCount64;
+        if (!Visible)
+        {
+            Opacity = MinimapOpacity;
+            _lastAppliedOpacity = MinimapOpacity;
+            Show();
+            _renderer.Start();
+        }
+    }
+
+    /// <summary>
+    /// Rebuild the z-order snapshot but leave visibility and fade timer alone.
+    /// For events that shouldn't wake a hidden minimap (e.g. FrontChanged).
+    /// </summary>
+    private void RefreshSnapshotIfVisible()
+    {
+        if (!Visible) return;
+        EnsureRendererInitialized();
+        RebuildSnapshot();
+    }
+
+    private void RebuildSnapshot()
+    {
         _orderedWindows.Clear();
         foreach (var kv in _canvas.Windows)
             if (kv.Value.State == CanvasDesktop.WindowState.Normal)
@@ -100,15 +127,6 @@ internal sealed class MinimapOverlay : Form
             _orderedWindows,
             _canvas.GetWorldExtents(),
             _canvas.GetViewport(primary.Width, primary.Height));
-
-        _touchTicks = Environment.TickCount64;
-        if (!Visible)
-        {
-            Opacity = MinimapOpacity;
-            _lastAppliedOpacity = MinimapOpacity;
-            Show();
-            _renderer.Start();
-        }
     }
 
     private void EnsureRendererInitialized()

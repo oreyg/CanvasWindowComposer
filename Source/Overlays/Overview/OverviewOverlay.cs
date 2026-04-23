@@ -100,21 +100,26 @@ internal sealed class OverviewOverlay : Form
     }
 
     /// <summary>
-    /// Toggle <c>WS_EX_LAYERED</c> at runtime. Normally avoided — layered
-    /// compositing carries a DWM redirection-surface cost even at
-    /// <c>LWA_ALPHA 255</c> — but adding it kicks DWM's composition state
-    /// and can break an otherwise sticky background-throttle.
+    /// Apply mode-dependent ex-style flags in a single round-trip:
+    /// <c>WS_EX_LAYERED</c> (kicks DWM composition — used in Panning to
+    /// defeat background-throttle) and <c>WS_EX_NOACTIVATE</c> (prevents
+    /// the form from becoming foreground).
     /// </summary>
-    public void SetLayered(bool enable)
+    public void SetModeStyle(bool layered, bool noActivate)
     {
         if (!IsHandleCreated) return;
         HWND h = (HWND)Handle;
         int ex = PInvoke.GetWindowLong(h, WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE);
-        int flag = (int)WINDOW_EX_STYLE.WS_EX_LAYERED;
-        int updated = enable ? (ex | flag) : (ex & ~flag);
+        int layeredFlag = (int)WINDOW_EX_STYLE.WS_EX_LAYERED;
+        int noActivateFlag = (int)WINDOW_EX_STYLE.WS_EX_NOACTIVATE;
+        int updated = ex;
+        updated = layered    ? (updated | layeredFlag)    : (updated & ~layeredFlag);
+        updated = noActivate ? (updated | noActivateFlag) : (updated & ~noActivateFlag);
         if (updated == ex) return;
+
+        bool layeredJustAdded = (ex & layeredFlag) == 0 && layered;
         PInvoke.SetWindowLong(h, WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE, updated);
-        if (enable)
+        if (layeredJustAdded)
         {
             // Without SetLayeredWindowAttributes after adding WS_EX_LAYERED the
             // window paints as fully transparent until attributes are set.

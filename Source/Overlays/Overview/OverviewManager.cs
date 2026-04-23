@@ -322,10 +322,11 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         // layered compositing seems to keep DWM driving the overlay. Zooming
         // holds foreground itself so it doesn't need the layered cost.
         bool wantLayered = (CurrentMode == OverviewMode.Panning);
+        bool wantNoActivate = (CurrentMode == OverviewMode.Panning);
         foreach (var p in _passes)
         {
             if (p.Grid != null) p.Grid.DrawGrid = _cfg.GridVisible;
-            p.SetLayered(wantLayered);
+            p.SetModeStyle(wantLayered, wantNoActivate);
             p.SetClickThrough(!_cfg.InputEnabled);
         }
         _thumbnails.Reconcile();

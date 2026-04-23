@@ -45,6 +45,20 @@ internal sealed class OverviewThumbnails
     private int _lastDesktopOpacity = -1;
     private bool? _lastTaskbarsVisible;
 
+    // UpdateWindowRects early-out: cache last-pushed camera. Same camera + same
+    // world rects => same screen rects, so skip the per-window DWM push loop.
+    // Use InvalidateCameraCache on paths that need a fresh push (new entries,
+    // re-register, drag-time world-rect update); NaN != anything forces the
+    // inequality check.
+    private double _lastPushedCamX = double.NaN;
+    private double _lastPushedCamY = double.NaN;
+    private double _lastPushedZoom = double.NaN;
+
+    private void InvalidateCameraCache()
+    {
+        _lastPushedCamX = double.NaN;
+    }
+
     private struct TaskbarEntry
     {
         public IntPtr Hwnd;
@@ -165,9 +179,11 @@ internal sealed class OverviewThumbnails
             }
         }
 
-        // Re-registered window now sits above taskbars — cycle them.
+        // Re-registered window now sits above taskbars — cycle them. The fresh
+        // thumb also needs its rect re-pushed on the next UpdateWindowRects.
         if (moved)
         {
+            InvalidateCameraCache();
             CycleTaskbarsOnTop();
             UpdateTaskbars();
         }
@@ -194,6 +210,7 @@ internal sealed class OverviewThumbnails
             entry.World = world;
             list[idx] = entry;
         }
+        InvalidateCameraCache();
     }
 
     /// <summary>Forget cached shell HWNDs — next <see cref="Show"/> re-enumerates.</summary>
@@ -522,6 +539,7 @@ internal sealed class OverviewThumbnails
                         HWnd = cand.HWnd, Thumb = thumb, World = cand.World,
                         InsetL = iL, InsetT = iT, InsetR = iR, InsetB = iB
                     });
+                    InvalidateCameraCache(); // new thumb needs initial rect push
                     appended = true;
                 }
             }
@@ -550,6 +568,12 @@ internal sealed class OverviewThumbnails
         double zoom = _camera.Zoom;
         double camX = _camera.X;
         double camY = _camera.Y;
+
+        if (camX == _lastPushedCamX && camY == _lastPushedCamY && zoom == _lastPushedZoom)
+            return;
+        _lastPushedCamX = camX;
+        _lastPushedCamY = camY;
+        _lastPushedZoom = zoom;
 
         foreach (var kv in _windowsByPass)
         {
