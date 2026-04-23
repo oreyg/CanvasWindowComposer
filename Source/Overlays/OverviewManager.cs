@@ -304,10 +304,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
         _thumbnails.Hide();
         foreach (var p in _passes)
-        {
             p.Hide();
-            p.SetLayered(false);
-        }
         _windows.Clear();
 
         if (_mmcssHandle != IntPtr.Zero)
@@ -489,7 +486,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
     {
         if (_draggingWindow)
         {
-            _wm.Reproject();
+            _wm.Reproject(true);
             _draggingWindow = false;
             _dragIndex = -1;
         }

@@ -137,7 +137,7 @@ internal sealed class WindowManager : IDisposable
         long now = _clock.TickCount64;
         if (now - _lastReprojectTick > ReprojectThrottleMs)
         {
-            Reproject(isTransient: true);
+            Reproject(isAsync: true, isTransient: true);
             _lastReprojectTick = now;
         }
     }
@@ -218,7 +218,7 @@ internal sealed class WindowManager : IDisposable
     {
         _projection?.ClearPending();
         var batch = BuildReprojectBatch();
-        _win32.BatchMove(batch, isAsync: false, isTransient: false);
+        _win32.BatchMove(batch, isAsync: isAsync, isTransient: isTransient);
     }
 
     private List<BatchMoveItem> BuildReprojectBatch()

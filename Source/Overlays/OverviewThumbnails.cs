@@ -37,9 +37,19 @@ internal sealed class OverviewThumbnails
     private IntPtr _cachedDesktopWallpaperHwnd;
     private List<IntPtr>? _cachedTaskbarHwnds;
 
-    // Desktop + taskbar per-pass state.
+    // Desktop + taskbar per-pass state. Rects are captured once at registration
+    // (they don't move during a session) — UpdateDesktop / UpdateTaskbars only
+    // push deltas (opacity / visibility) when those actually change.
     private readonly Dictionary<OverviewOverlay, IntPtr> _desktopByPass = new();
-    private readonly Dictionary<OverviewOverlay, List<(IntPtr hwnd, IntPtr thumb)>> _taskbarsByPass = new();
+    private readonly Dictionary<OverviewOverlay, List<TaskbarEntry>> _taskbarsByPass = new();
+    private int _lastDesktopOpacity = -1;
+    private bool? _lastTaskbarsVisible;
+
+    private struct TaskbarEntry
+    {
+        public IntPtr Hwnd;
+        public IntPtr Thumb;
+    }
 
     // Window thumbnails: per-pass list in DWM registration order (z-descending).
     // The list IS the authoritative state — its order mirrors what DWM will
@@ -50,6 +60,11 @@ internal sealed class OverviewThumbnails
         public IntPtr HWnd;
         public IntPtr Thumb;
         public WorldRect World;
+        // DWM frame inset, cached at registration time. Stable while the entry
+        // is in the target list — maximize/unmaximize force a re-register which
+        // refreshes this, so the only drift case is custom-chrome apps that
+        // toggle frame style without a state change (rare).
+        public int InsetL, InsetT, InsetR, InsetB;
     }
     private readonly Dictionary<OverviewOverlay, List<ActiveEntry>> _windowsByPass = new();
 
@@ -106,8 +121,7 @@ internal sealed class OverviewThumbnails
     /// </summary>
     public void Reconcile()
     {
-        foreach (var pass in _passes)
-            UpdateDesktop(pass);
+        UpdateDesktop();
 
         ComputeTarget();
         bool appended = RebuildWindows();
@@ -118,8 +132,7 @@ internal sealed class OverviewThumbnails
         if (appended)
             CycleTaskbarsOnTop();
 
-        foreach (var pass in _passes)
-            UpdateTaskbars(pass);
+        UpdateTaskbars();
 
         UpdateWindowRects();
     }
@@ -156,8 +169,7 @@ internal sealed class OverviewThumbnails
         if (moved)
         {
             CycleTaskbarsOnTop();
-            foreach (var pass in _passes)
-                UpdateTaskbars(pass);
+            UpdateTaskbars();
         }
     }
 
@@ -206,7 +218,30 @@ internal sealed class OverviewThumbnails
         if (desktopWnd == IntPtr.Zero) return;
 
         HRESULT hr = PInvoke.DwmRegisterThumbnail((HWND)pass.Handle, (HWND)desktopWnd, out nint thumb);
-        _desktopByPass[pass] = hr.Succeeded ? thumb : IntPtr.Zero;
+        if (hr.Failed) { _desktopByPass[pass] = IntPtr.Zero; return; }
+
+        // WorkerW spans the entire virtual screen. Push this pass's slice once
+        // at register time — neither source nor dest moves during a session;
+        // opacity is the only thing UpdateDesktop pushes per frame.
+        var b = pass.Screen.Bounds;
+        var vs = _screens.VirtualScreen;
+        var props = new DWM_THUMBNAIL_PROPERTIES
+        {
+            dwFlags = PInvoke.DWM_TNP_RECTDESTINATION | PInvoke.DWM_TNP_RECTSOURCE | PInvoke.DWM_TNP_VISIBLE,
+            rcDestination = new RECT { left = 0, top = 0, right = b.Width, bottom = b.Height },
+            rcSource = new RECT
+            {
+                left   = b.X - vs.X,
+                top    = b.Y - vs.Y,
+                right  = b.X - vs.X + b.Width,
+                bottom = b.Y - vs.Y + b.Height
+            },
+            fVisible = true
+        };
+        PInvoke.DwmUpdateThumbnailProperties(thumb, props);
+
+        _desktopByPass[pass] = thumb;
+        _lastDesktopOpacity = -1; // force opacity push on the next UpdateDesktop
     }
 
     private void UnregisterDesktop(OverviewOverlay pass)
@@ -216,10 +251,13 @@ internal sealed class OverviewThumbnails
         _desktopByPass.Remove(pass);
     }
 
-    private void UpdateDesktop(OverviewOverlay pass)
+    /// <summary>
+    /// Push desktop opacity to every pass if it changed since the last push.
+    /// Opacity is the same for all passes (driven by mode + camera zoom), so
+    /// we track a single "last applied" value and fan out on change.
+    /// </summary>
+    private void UpdateDesktop()
     {
-        if (!_desktopByPass.TryGetValue(pass, out var thumb) || thumb == IntPtr.Zero) return;
-
         var cfg = _state.CurrentConfig;
         byte opacity = cfg.DesktopOpacity;
         if (_state.CurrentMode == OverviewMode.Zooming)
@@ -231,27 +269,19 @@ internal sealed class OverviewThumbnails
             opacity = (byte)(min + (max - min) * t);
         }
 
-        // WorkerW spans the entire virtual screen. Position this monitor's
-        // slice of it over this form's client area by setting a source rect.
-        var b = pass.Screen.Bounds;
-        var vs = _screens.VirtualScreen;
+        if (opacity == _lastDesktopOpacity) return;
+        _lastDesktopOpacity = opacity;
+
         var props = new DWM_THUMBNAIL_PROPERTIES
         {
-            dwFlags = PInvoke.DWM_TNP_RECTDESTINATION | PInvoke.DWM_TNP_RECTSOURCE |
-                      PInvoke.DWM_TNP_VISIBLE | PInvoke.DWM_TNP_OPACITY,
-            rcDestination = new RECT { left = 0, top = 0, right = b.Width, bottom = b.Height },
-            rcSource = new RECT
-            {
-                left   = b.X - vs.X,
-                top    = b.Y - vs.Y,
-                right  = b.X - vs.X + b.Width,
-                bottom = b.Y - vs.Y + b.Height
-            },
-            fVisible = true,
+            dwFlags = PInvoke.DWM_TNP_OPACITY,
             opacity = opacity
         };
-
-        PInvoke.DwmUpdateThumbnailProperties(thumb, props);
+        foreach (var kv in _desktopByPass)
+        {
+            if (kv.Value != IntPtr.Zero)
+                PInvoke.DwmUpdateThumbnailProperties(kv.Value, props);
+        }
     }
 
     private IntPtr GetDesktopWallpaperHwnd()
@@ -289,55 +319,62 @@ internal sealed class OverviewThumbnails
 
     private void RegisterTaskbars(OverviewOverlay pass)
     {
-        var list = new List<(IntPtr hwnd, IntPtr thumb)>();
+        var list = new List<TaskbarEntry>();
         foreach (var hwnd in GetTaskbarHwnds())
         {
             HRESULT hr = PInvoke.DwmRegisterThumbnail((HWND)pass.Handle, (HWND)hwnd, out nint thumb);
-            if (hr.Succeeded) list.Add((hwnd, thumb));
-        }
-        _taskbarsByPass[pass] = list;
-    }
+            if (hr.Failed) continue;
 
-    private void UnregisterTaskbars(OverviewOverlay pass)
-    {
-        if (!_taskbarsByPass.TryGetValue(pass, out var list)) return;
-        foreach (var (_, thumb) in list)
-            PInvoke.DwmUnregisterThumbnail(thumb);
-        _taskbarsByPass.Remove(pass);
-    }
-
-    private void UpdateTaskbars(OverviewOverlay pass)
-    {
-        if (!_taskbarsByPass.TryGetValue(pass, out var list) || list.Count == 0) return;
-
-        if (!_state.CurrentConfig.TaskbarVisible)
-        {
-            var hideProps = new DWM_THUMBNAIL_PROPERTIES
-            {
-                dwFlags = PInvoke.DWM_TNP_VISIBLE,
-                fVisible = false
-            };
-            foreach (var (_, thumb) in list)
-                PInvoke.DwmUpdateThumbnailProperties(thumb, hideProps);
-            return;
-        }
-
-        foreach (var (hwnd, thumb) in list)
-        {
+            // Taskbar position is fixed; push rect once here. Visibility is
+            // driven per-config via UpdateTaskbars.
             PInvoke.GetWindowRect((HWND)hwnd, out RECT r);
             var props = new DWM_THUMBNAIL_PROPERTIES
             {
-                dwFlags = PInvoke.DWM_TNP_RECTDESTINATION | PInvoke.DWM_TNP_VISIBLE,
+                dwFlags = PInvoke.DWM_TNP_RECTDESTINATION,
                 rcDestination = new RECT
                 {
                     left   = r.left   - pass.OriginX,
                     top    = r.top    - pass.OriginY,
                     right  = r.right  - pass.OriginX,
                     bottom = r.bottom - pass.OriginY
-                },
-                fVisible = true
+                }
             };
             PInvoke.DwmUpdateThumbnailProperties(thumb, props);
+
+            list.Add(new TaskbarEntry { Hwnd = hwnd, Thumb = thumb });
+        }
+        _taskbarsByPass[pass] = list;
+        _lastTaskbarsVisible = null; // force visibility push on the next UpdateTaskbars
+    }
+
+    private void UnregisterTaskbars(OverviewOverlay pass)
+    {
+        if (!_taskbarsByPass.TryGetValue(pass, out var list)) return;
+        foreach (var entry in list)
+            PInvoke.DwmUnregisterThumbnail(entry.Thumb);
+        _taskbarsByPass.Remove(pass);
+    }
+
+    /// <summary>
+    /// Push taskbar visibility if it changed since the last push. Visibility
+    /// applies uniformly to every pass's taskbars, so a single tracking flag
+    /// gates fan-out.
+    /// </summary>
+    private void UpdateTaskbars()
+    {
+        bool visible = _state.CurrentConfig.TaskbarVisible;
+        if (_lastTaskbarsVisible == visible) return;
+        _lastTaskbarsVisible = visible;
+
+        var props = new DWM_THUMBNAIL_PROPERTIES
+        {
+            dwFlags = PInvoke.DWM_TNP_VISIBLE,
+            fVisible = visible
+        };
+        foreach (var kv in _taskbarsByPass)
+        {
+            foreach (var entry in kv.Value)
+                PInvoke.DwmUpdateThumbnailProperties(entry.Thumb, props);
         }
     }
 
@@ -479,7 +516,12 @@ internal sealed class OverviewThumbnails
                 if (hr.Succeeded)
                 {
                     SetVisibleOnce(thumb);
-                    current.Add(new ActiveEntry { HWnd = cand.HWnd, Thumb = thumb, World = cand.World });
+                    var (iL, iT, iR, iB) = _win32.GetFrameInset(cand.HWnd);
+                    current.Add(new ActiveEntry
+                    {
+                        HWnd = cand.HWnd, Thumb = thumb, World = cand.World,
+                        InsetL = iL, InsetT = iT, InsetR = iR, InsetB = iB
+                    });
                     appended = true;
                 }
             }
@@ -516,7 +558,6 @@ internal sealed class OverviewThumbnails
 
             foreach (var entry in list)
             {
-                var hWnd = entry.HWnd;
                 var world = entry.World;
 
                 int sx = (int)((world.X - camX) * zoom);
@@ -524,11 +565,10 @@ internal sealed class OverviewThumbnails
                 int sw = Math.Max(1, (int)(world.W * zoom));
                 int sh = Math.Max(1, (int)(world.H * zoom));
 
-                var (iL, iT, iR, iB) = _win32.GetFrameInset(hWnd);
-                int fL = (int)(iL * zoom);
-                int fT = (int)(iT * zoom);
-                int fR = (int)(iR * zoom);
-                int fB = (int)(iB * zoom);
+                int fL = (int)(entry.InsetL * zoom);
+                int fT = (int)(entry.InsetT * zoom);
+                int fR = (int)(entry.InsetR * zoom);
+                int fB = (int)(entry.InsetB * zoom);
 
                 int left   = sx + fL - pass.OriginX;
                 int top    = sy + fT - pass.OriginY;
