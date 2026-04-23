@@ -19,6 +19,10 @@ GetCursorPos
 // Raw input thread wait
 MsgWaitForMultipleObjects
 QUEUE_STATUS_FLAGS
+PeekMessage
+MSG
+PEEK_MESSAGE_REMOVE_TYPE
+WM_INPUT
 
 // Process info
 GetCurrentProcess
