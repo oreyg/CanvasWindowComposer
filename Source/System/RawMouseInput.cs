@@ -205,6 +205,13 @@ internal sealed class RawMouseInput : IDisposable
     /// </summary>
     private unsafe bool WaitForInput(HANDLE shutdown)
     {
+        // By accident also clears stale WM_INPUT flag, which would cause MsgWaitForMultipleObjects to wait
+        const uint QS_RAWINPUT = (uint)QUEUE_STATUS_FLAGS.QS_RAWINPUT;
+        if ((PInvoke.GetQueueStatus(QUEUE_STATUS_FLAGS.QS_RAWINPUT) & QS_RAWINPUT) != QS_RAWINPUT)
+        {
+            return true;
+        }
+
         HANDLE* handles = stackalloc HANDLE[1];
         handles[0] = shutdown;
         uint result = (uint)PInvoke.MsgWaitForMultipleObjects(
@@ -218,14 +225,6 @@ internal sealed class RawMouseInput : IDisposable
     /// dropping events — see the field-level comment for why that matters.
     /// Returns true if at least one mouse event was processed.
     /// </summary>
-    /// <remarks>
-    /// Also pulls WM_INPUT messages off the thread queue via PeekMessage.
-    /// GetRawInputBuffer reads raw-input payloads from a kernel buffer and
-    /// does NOT dequeue the WM_INPUT messages themselves, so QS_RAWINPUT
-    /// stays set and <see cref="MsgWaitForMultipleObjects"/> returns
-    /// immediately on the next call — the thread spins. PeekMessage(PM_REMOVE)
-    /// resets the queue state so the next wait actually blocks.
-    /// </remarks>
     private unsafe bool DrainInput(ref IntPtr buffer, ref int bufferBytes)
     {
         uint headerSize = (uint)sizeof(RAWINPUTHEADER);
@@ -258,14 +257,6 @@ internal sealed class RawMouseInput : IDisposable
                 raw = NextBlock(raw);
             }
         }
-
-        MSG msg;
-        while (PInvoke.PeekMessage(&msg, HWND.Null, PInvoke.WM_INPUT, PInvoke.WM_INPUT,
-            PEEK_MESSAGE_REMOVE_TYPE.PM_REMOVE))
-        {
-            // discard; payload was drained via GetRawInputBuffer above.
-        }
-
         return hadInput;
     }
 
