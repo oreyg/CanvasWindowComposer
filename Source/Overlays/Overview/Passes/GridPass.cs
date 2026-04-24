@@ -1,26 +1,39 @@
 using System;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
+using Vortice.DXGI;
 using Vortice.D3DCompiler;
 
 namespace CanvasDesktop;
 
 /// <summary>
 /// Fullscreen-triangle grid pass. Reads the shared view CB (camera, size,
-/// time, DPI, pan accumulator) and renders the adaptive infinite grid plus
-/// nebula parallax. Falls back to clearing the RT when <see cref="DrawGrid"/>
-/// is false — used in Panning mode where the grid is hidden behind opaque
-/// window thumbnails.
+/// time, DPI, pan accumulator, pass offset, per-monitor frame data) and
+/// renders the adaptive infinite grid plus nebula parallax. Falls back to
+/// clearing the RT when <see cref="DrawGrid"/> is false — used in Panning
+/// mode where the grid is hidden behind opaque window thumbnails.
+///
+/// Owns a small StructuredBuffer of monitor rects (world-space) so the
+/// primary pass can draw the camera-viewport corner brackets once per
+/// monitor; non-primary passes skip that loop.
 /// </summary>
 internal sealed class GridPass : IDisposable
 {
     private const int FullscreenTriangleVertexCount = 3;
+    private const int MonitorBufferCapacity = 16;
+    private const int MonitorStructBytes = 16; // two float2 = (offset, size)
 
     private static byte[]? _vsBytecode;
     private static byte[]? _psBytecode;
 
     private ID3D11VertexShader? _vs;
     private ID3D11PixelShader? _ps;
+    private ID3D11Buffer? _monitorBuffer;
+    private ID3D11ShaderResourceView? _monitorSrv;
+
+    private readonly float[] _monitors = new float[MonitorBufferCapacity * 4];
+    private volatile int _monitorCount;
+    private readonly object _monitorsLock = new();
 
     public bool DrawGrid { get; set; } = true;
 
@@ -43,28 +56,87 @@ internal sealed class GridPass : IDisposable
             throw new InvalidOperationException("GridPass.CompileShaders must run before construction");
         _vs = device.CreateVertexShader(_vsBytecode);
         _ps = device.CreatePixelShader(_psBytecode);
+
+        var desc = new BufferDescription
+        {
+            ByteWidth = (uint)(MonitorBufferCapacity * MonitorStructBytes),
+            BindFlags = BindFlags.ShaderResource,
+            Usage = ResourceUsage.Dynamic,
+            CPUAccessFlags = CpuAccessFlags.Write,
+            MiscFlags = ResourceOptionFlags.BufferStructured,
+            StructureByteStride = (uint)MonitorStructBytes
+        };
+        _monitorBuffer = device.CreateBuffer(desc);
+
+        var srvDesc = new ShaderResourceViewDescription
+        {
+            Format = Format.Unknown,
+            ViewDimension = ShaderResourceViewDimension.Buffer,
+            Buffer = new BufferShaderResourceView { FirstElement = 0, NumElements = (uint)MonitorBufferCapacity }
+        };
+        _monitorSrv = device.CreateShaderResourceView(_monitorBuffer, srvDesc);
+    }
+
+    /// <summary>
+    /// Push the current monitor layout for this pass. OverviewRenderer
+    /// writes the shared CB (<c>passOff</c>, <c>isPrimary</c>, <c>monitorCount</c>);
+    /// this call just updates the SRV that the shader indexes when
+    /// <c>isPrimary != 0</c> to draw the per-monitor corner brackets.
+    /// </summary>
+    public void SetMonitorLayout(System.Drawing.Rectangle[] monitors)
+    {
+        int count = Math.Min(monitors.Length, MonitorBufferCapacity);
+        lock (_monitorsLock)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                _monitors[i * 4 + 0] = monitors[i].X;
+                _monitors[i * 4 + 1] = monitors[i].Y;
+                _monitors[i * 4 + 2] = monitors[i].Width;
+                _monitors[i * 4 + 3] = monitors[i].Height;
+            }
+            _monitorCount = count;
+        }
+    }
+
+    public int MonitorCount
+    {
+        get { return _monitorCount; }
     }
 
     public void Render(ID3D11DeviceContext ctx, ID3D11RenderTargetView rtv, ID3D11Buffer gridCb)
     {
-        if (DrawGrid)
-        {
-            ctx.VSSetShader(_vs);
-            ctx.PSSetShader(_ps);
-            ctx.PSSetConstantBuffer(0, gridCb);
-            ctx.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
-            ctx.Draw(FullscreenTriangleVertexCount, 0);
-        }
-        else
+        if (!DrawGrid)
         {
             ctx.ClearRenderTargetView(rtv, new Vortice.Mathematics.Color4(0, 0, 0, 0));
+            return;
         }
+
+        if (_monitorCount > 0)
+        {
+            var mapped = ctx.Map(_monitorBuffer!, MapMode.WriteDiscard);
+            lock (_monitorsLock)
+            {
+                System.Runtime.InteropServices.Marshal.Copy(
+                    _monitors, 0, mapped.DataPointer, _monitorCount * 4);
+            }
+            ctx.Unmap(_monitorBuffer!);
+        }
+
+        ctx.VSSetShader(_vs);
+        ctx.PSSetShader(_ps);
+        ctx.PSSetConstantBuffer(0, gridCb);
+        ctx.PSSetShaderResource(0, _monitorSrv!);
+        ctx.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
+        ctx.Draw(FullscreenTriangleVertexCount, 0);
     }
 
     public void Dispose()
     {
         _vs?.Dispose();
         _ps?.Dispose();
+        _monitorSrv?.Dispose();
+        _monitorBuffer?.Dispose();
     }
 
     private const string ShaderSource = @"
@@ -78,8 +150,20 @@ cbuffer GridCB : register(b0)
     float dpiScale;
     float panAccumX;
     float panAccumY;
-    float2 _pad;
+    float passOffX;
+    float passOffY;
+    int monitorCount;
+    int isPrimary;
+    int _pad0;
+    int _pad1;
 };
+
+struct MonitorRect
+{
+    float2 offset;
+    float2 size;
+};
+StructuredBuffer<MonitorRect> monitors : register(t0);
 
 struct VSOut
 {
@@ -216,8 +300,7 @@ float4 PSMain(VSOut input) : SV_Target
 {
     float2 screenPos = input.uv * float2(screenW, screenH);
 
-    // === World-space coordinate ===
-    float2 worldPos = screenPos / zoom + camPos;
+    float2 worldPos = (screenPos + float2(passOffX, passOffY)) / zoom + camPos;
 
     // === Adaptive grid spacing (doubles per zoom level) ===
     float logZoom = log2(zoom * 100.0 / 80.0);
@@ -235,8 +318,8 @@ float4 PSMain(VSOut input) : SV_Target
     float originWidth = max(0.15 / zoom, minPx * 0.5);
 
     float origin = saturate(
-        gridLine(worldPos.x, 1e6, originWidth) * step(abs(worldPos.x), originWidth * 3.0) +
-        gridLine(worldPos.y, 1e6, originWidth) * step(abs(worldPos.y), originWidth * 3.0));
+        gridLine(worldPos.x, 1e6, originWidth) +
+        gridLine(worldPos.y, 1e6, originWidth));
 
     float major = saturate(
         gridLine(worldPos.x, gridMajor, lineWidth) +
@@ -296,34 +379,32 @@ float4 PSMain(VSOut input) : SV_Target
         color += glow * fade;
     }
 
-    // Camera viewport frame — corner brackets showing what the screen will show on close
+    if (isPrimary != 0)
     {
-        float vw = screenW * zoom;
-        float vh = screenH * zoom;
-        float arm = min(vw, vh) * 0.025;
-        float lw = 3.0;
+        for (int mi = 0; mi < monitorCount; mi++)
+        {
+            float2 mOff  = monitors[mi].offset;
+            float2 mSize = monitors[mi].size;
 
-        float ox = (screenW - vw) * 0.5;
-        float oy = (screenH - vh) * 0.5;
-        float dL = abs(screenPos.x - ox);
-        float dR = abs(screenPos.x - ox - vw);
-        float dT = abs(screenPos.y - oy);
-        float dB = abs(screenPos.y - oy - vh);
+            float2 mOrigin = float2(screenW, screenH) * 0.5
+                            - mSize * zoom * 0.5
+                            + (mOff - float2(passOffX, passOffY)) * zoom;
+            float vw = mSize.x * zoom;
+            float vh = mSize.y * zoom;
+            float arm = min(vw, vh) * 0.025;
+            float lw = 3.0;
 
-        // Pixel relative to viewport rect (0,0 = top-left corner of frame)
-        float2 p = screenPos - float2(ox, oy);
-        // Distance from nearest edge, clamped inside the rect
-        float nearX = min(p.x, vw - p.x);
-        float nearY = min(p.y, vh - p.y);
-        bool inside = p.x >= 0 && p.x <= vw && p.y >= 0 && p.y <= vh;
-        // On edge and within arm length of a corner
-        float onEdgeX = step(nearX, lw) * step(nearY, arm);
-        float onEdgeY = step(nearY, lw) * step(nearX, arm);
-        float corners = inside ? saturate(onEdgeX + onEdgeY) : 0;
+            float2 p = screenPos - mOrigin;
+            float nearX = min(p.x, vw - p.x);
+            float nearY = min(p.y, vh - p.y);
+            bool inside = p.x >= 0 && p.x <= vw && p.y >= 0 && p.y <= vh;
+            float onEdgeX = step(nearX, lw) * step(nearY, arm);
+            float onEdgeY = step(nearY, lw) * step(nearX, arm);
+            float corners = inside ? saturate(onEdgeX + onEdgeY) : 0;
 
-        color += float3(0.0, 0.7, 1.0) * saturate(corners) * 0.4;
+            color += float3(0.0, 0.7, 1.0) * saturate(corners) * 0.4;
+        }
     }
-
 
     return float4(color, 1.0);
 }

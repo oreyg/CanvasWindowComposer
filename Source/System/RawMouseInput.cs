@@ -205,6 +205,13 @@ internal sealed class RawMouseInput : IDisposable
     /// </summary>
     private unsafe bool WaitForInput(HANDLE shutdown)
     {
+        // By accident also clears stale WM_INPUT flag, which would cause MsgWaitForMultipleObjects to wait
+        const uint QS_RAWINPUT = (uint)QUEUE_STATUS_FLAGS.QS_RAWINPUT;
+        if ((PInvoke.GetQueueStatus(QUEUE_STATUS_FLAGS.QS_RAWINPUT) & QS_RAWINPUT) != QS_RAWINPUT)
+        {
+            return true;
+        }
+
         HANDLE* handles = stackalloc HANDLE[1];
         handles[0] = shutdown;
         uint result = (uint)PInvoke.MsgWaitForMultipleObjects(

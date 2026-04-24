@@ -162,7 +162,7 @@ internal sealed class Win32WindowApi : IWindowApi
         _ = PInvoke.SetWindowRgn((HWND)hWnd, (HRGN)IntPtr.Zero, true);
     }
 
-    public void BatchMove(List<BatchMoveItem> items, bool isAsync, bool isTransient)
+    public void BatchMove(List<BatchMoveItem> items, bool isAsync, bool isTransient, System.Threading.CancellationToken ct = default)
     {
         if (items.Count == 0)
             return;
@@ -170,32 +170,42 @@ internal sealed class Win32WindowApi : IWindowApi
         HDWP hdwp = PInvoke.BeginDeferWindowPos(items.Count);
         bool useBatch = hdwp != default(HDWP);
 
-        foreach (var item in items)
+        try
         {
-            SET_WINDOW_POS_FLAGS flags = SET_WINDOW_POS_FLAGS.SWP_NOZORDER | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE;
-            if (item.PosOnly)  flags |= SET_WINDOW_POS_FLAGS.SWP_NOSIZE;
-            if (isAsync)       flags |= SET_WINDOW_POS_FLAGS.SWP_ASYNCWINDOWPOS;
-            if (isTransient)   flags |= SET_WINDOW_POS_FLAGS.SWP_NOSENDCHANGING;
-
-            HWND target = (HWND)item.HWnd;
-            var r = item.Rect;
-            if (useBatch)
+            foreach (var item in items)
             {
-                hdwp = PInvoke.DeferWindowPos(hdwp, target, HWND.Null, r.X, r.Y, r.W, r.H, flags);
-                if (hdwp == default(HDWP))
+                // On cancel, stop queuing new moves and fall through to the
+                // finally block - accumulated DeferWindowPos entries still need EndDeferWindowPos.
+                if (ct.IsCancellationRequested)
+                    return;
+
+                SET_WINDOW_POS_FLAGS flags = SET_WINDOW_POS_FLAGS.SWP_NOZORDER | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE;
+                if (item.PosOnly)  flags |= SET_WINDOW_POS_FLAGS.SWP_NOSIZE;
+                if (isAsync)       flags |= SET_WINDOW_POS_FLAGS.SWP_ASYNCWINDOWPOS;
+                if (isTransient)   flags |= SET_WINDOW_POS_FLAGS.SWP_NOSENDCHANGING;
+
+                HWND target = (HWND)item.HWnd;
+                var r = item.Rect;
+                if (useBatch)
                 {
-                    useBatch = false;
+                    hdwp = PInvoke.DeferWindowPos(hdwp, target, HWND.Null, r.X, r.Y, r.W, r.H, flags);
+                    if (hdwp == default(HDWP))
+                    {
+                        useBatch = false;
+                        PInvoke.SetWindowPos(target, HWND.Null, r.X, r.Y, r.W, r.H, flags);
+                    }
+                }
+                else
+                {
                     PInvoke.SetWindowPos(target, HWND.Null, r.X, r.Y, r.W, r.H, flags);
                 }
             }
-            else
-            {
-                PInvoke.SetWindowPos(target, HWND.Null, r.X, r.Y, r.W, r.H, flags);
-            }
         }
-
-        if (useBatch && hdwp != default(HDWP))
-            PInvoke.EndDeferWindowPos(hdwp);
+        finally
+        {
+            if (useBatch && hdwp != default(HDWP))
+                PInvoke.EndDeferWindowPos(hdwp);
+        }
     }
 
     public unsafe void EnumWindows(Func<IntPtr, bool> callback)

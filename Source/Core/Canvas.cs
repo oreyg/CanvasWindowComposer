@@ -9,6 +9,7 @@ internal struct WorldRect
 {
     public double X, Y, W, H;
     public WindowState State;
+    public long ZOrder;
 }
 
 /// <summary>Screen-space projection of a <see cref="WorldRect"/>.</summary>
@@ -31,6 +32,7 @@ internal sealed class Canvas
 
     private double _camX, _camY;
     private double _zoom = 1.0;
+    private long _foregroundCounter;
 
     private readonly Dictionary<IntPtr, WorldRect> _windows = new();
 
@@ -87,6 +89,9 @@ internal sealed class Canvas
 
     /// <summary>Raised when a window is maximized or restored from maximize.</summary>
     public event Action<IntPtr>? MaximizeChanged;
+
+    /// <summary>Raised when a window is stamped as the new foreground via <see cref="BringToForeground"/>.</summary>
+    public event Action<IntPtr>? FrontChanged;
 
     /// <summary>Raised when the caller explicitly commits canvas state to the system.</summary>
     public event Action? Committed;
@@ -146,17 +151,6 @@ internal sealed class Canvas
         CameraChanged?.Invoke();
     }
 
-    /// <summary>Check if a window's projected screen rect overlaps with the screen.</summary>
-    public bool IsWindowOnScreen(IntPtr hWnd, int screenW, int screenH)
-    {
-        if (!_windows.TryGetValue(hWnd, out var world))
-            return false;
-
-        var r = WorldToScreen(world);
-        return r.X + r.W > 0 && r.X < screenW &&
-               r.Y + r.H > 0 && r.Y < screenH;
-    }
-
     public void ResetCamera()
     {
         _camX = 0;
@@ -166,18 +160,26 @@ internal sealed class Canvas
 
     // ==================== WORLD MAP ====================
 
-    /// <summary>Register a window at the given world position.</summary>
+    /// <summary>Register a window at the given world position, or update position of an existing one.</summary>
     public void SetWindow(IntPtr hWnd, double wx, double wy, double ww, double wh)
     {
-        _windows[hWnd] = new WorldRect { X = wx, Y = wy, W = ww, H = wh };
+        if (_windows.TryGetValue(hWnd, out var existing))
+        {
+            existing.X = wx; existing.Y = wy; existing.W = ww; existing.H = wh;
+            _windows[hWnd] = existing;
+        }
+        else
+        {
+            _windows[hWnd] = new WorldRect { X = wx, Y = wy, W = ww, H = wh, ZOrder = ++_foregroundCounter };
+        }
     }
 
-    /// <summary>Register a window from its current screen position.</summary>
+    /// <summary>Register a window from its current screen position, or update position of an existing one.</summary>
     public void SetWindowFromScreen(IntPtr hWnd, int sx, int sy, int sw, int sh)
     {
         var (wx, wy) = ScreenToWorld(sx, sy);
         var (ww, wh) = ScreenToWorldSize(sw, sh);
-        _windows[hWnd] = new WorldRect { X = wx, Y = wy, W = ww, H = wh };
+        SetWindow(hWnd, wx, wy, ww, wh);
     }
 
     /// <summary>
@@ -275,9 +277,21 @@ internal sealed class Canvas
         r.State = state;
         _windows[hWnd] = r;
 
+        if (state == WindowState.Minimized)
+            r.ZOrder = -1;
         if (old == WindowState.Minimized || state == WindowState.Minimized)
             CollapseChanged?.Invoke(hWnd);
         if (old == WindowState.Maximized || state == WindowState.Maximized)
             MaximizeChanged?.Invoke(hWnd);
     }
+
+    /// <summary>Stamp <paramref name="hWnd"/> with a fresh foreground counter. No-op if untracked.</summary>
+    public void BringToForeground(IntPtr hWnd)
+    {
+        if (!_windows.TryGetValue(hWnd, out var r)) return;
+        r.ZOrder = ++_foregroundCounter;
+        _windows[hWnd] = r;
+        FrontChanged?.Invoke(hWnd);
+    }
+
 }

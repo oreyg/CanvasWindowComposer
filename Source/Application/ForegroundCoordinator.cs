@@ -68,13 +68,25 @@ internal sealed class ForegroundCoordinator
 
         if (_canvas.HasWindow(hwnd))
         {
-            var screen = _screens.PrimaryWorkingArea;
-            if (!_canvas.IsWindowOnScreen(hwnd, screen.Width, screen.Height))
+            var world = _canvas.Windows[hwnd];
+            var r = _canvas.WorldToScreen(world);
+            if (!IsOnAnyScreen(r))
             {
-                var world = _canvas.Windows[hwnd];
+                var screen = _screens.PrimaryWorkingArea;
                 _canvas.CenterOn(world.X, world.Y, world.W, world.H, screen.Width, screen.Height);
                 _canvas.Commit();
             }
         }
+    }
+
+    private bool IsOnAnyScreen(WindowRect r)
+    {
+        foreach (var bounds in _screens.AllBounds)
+        {
+            if (r.X + r.W > bounds.X && r.X < bounds.Right &&
+                r.Y + r.H > bounds.Y && r.Y < bounds.Bottom)
+                return true;
+        }
+        return false;
     }
 }

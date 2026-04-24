@@ -19,6 +19,7 @@ GetCursorPos
 // Raw input thread wait
 MsgWaitForMultipleObjects
 QUEUE_STATUS_FLAGS
+GetQueueStatus
 
 // Process info
 GetCurrentProcess
@@ -125,3 +126,10 @@ VIRTUAL_KEY
 RegisterHotKey
 UnregisterHotKey
 HOT_KEY_MODIFIERS
+
+// Low-level mouse hook (MMB blocker while overview is panning)
+SetWindowsHookEx
+UnhookWindowsHookEx
+CallNextHookEx
+WINDOWS_HOOK_ID
+WM_MBUTTONDOWN

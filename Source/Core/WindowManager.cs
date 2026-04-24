@@ -97,6 +97,7 @@ internal sealed class WindowManager : IDisposable
         input.WindowDestroyed += OnWindowDestroyedEvent;
         input.WindowShown     += OnWindowShownEvent;
         input.WindowMoved     += OnWindowMovedEvent;
+        input.WindowFocused   += OnWindowFocusedEvent;
         input.AltTabStarted   += OnAltTabStarted;
         input.AltTabEnded     += OnAltTabEnded;
     }
@@ -136,7 +137,7 @@ internal sealed class WindowManager : IDisposable
         long now = _clock.TickCount64;
         if (now - _lastReprojectTick > ReprojectThrottleMs)
         {
-            Reproject(isTransient: true);
+            Reproject(isAsync: true, isTransient: true);
             _lastReprojectTick = now;
         }
     }
@@ -175,6 +176,11 @@ internal sealed class WindowManager : IDisposable
             ReconcileWindow(hWnd);
     }
 
+    private void OnWindowFocusedEvent(IntPtr hWnd)
+    {
+        _canvas.BringToForeground(hWnd);
+    }
+
     private void OnAltTabStarted()
     {
         SuspendGreedyDraw = true;
@@ -205,14 +211,14 @@ internal sealed class WindowManager : IDisposable
     /// and applies the batch synchronously on the calling thread. Use this when
     /// the caller depends on the windows being at their final positions before
     /// the next visible frame (e.g. just before the overview overlay hides).
-    /// Drops any worker batch that hasn't been applied yet so it can't stomp
-    /// the sync result.
+    /// Cancels any in-flight worker batch so the sync run doesn't have to wait
+    /// for it.
     /// </summary>
     public void ReprojectSync(bool isAsync = false, bool isTransient = false)
     {
         _projection?.ClearPending();
         var batch = BuildReprojectBatch();
-        _win32.BatchMove(batch, isAsync: false, isTransient: false);
+        _win32.BatchMove(batch, isAsync: isAsync, isTransient: isTransient);
     }
 
     private List<BatchMoveItem> BuildReprojectBatch()

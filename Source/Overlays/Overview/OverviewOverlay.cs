@@ -1,13 +1,12 @@
 using System;
-using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
 
 namespace CanvasDesktop;
 
 /// <summary>
-/// One per monitor: a borderless form + D3D11 swap chain + DWM thumbnails.
-/// Owned by OverviewOverlay. All per-form rendering state lives here.
+/// One per monitor: a borderless form + D3D11 swap chain. Thumbnail state
+/// for the pass lives in the shared <see cref="OverviewThumbnails"/>.
 /// </summary>
 internal sealed class OverviewOverlay : Form
 {
@@ -18,11 +17,6 @@ internal sealed class OverviewOverlay : Form
     public int OriginY { get { return Screen.Bounds.Y; } }
 
     public OverviewRenderer? Renderer { get; private set; }
-
-    // Thumbnails owned by this pass. A canvas window that straddles two
-    // monitors is registered on BOTH passes; DWM clips to this form's client area.
-    public readonly List<(IntPtr hWnd, IntPtr thumb, WorldRect world)> Thumbnails = new();
-    public readonly List<(IntPtr hwnd, IntPtr thumb)> Taskbars = new();
 
     // Input forwarding callbacks (set by OverviewOverlay coordinator)
     public Action<OverviewOverlay, KeyEventArgs>? OnKey;
@@ -41,9 +35,8 @@ internal sealed class OverviewOverlay : Form
             // No WS_EX_LAYERED — Win10+ accepts WS_EX_TRANSPARENT alone for
             // cross-process click-through, so we skip the layered-window
             // compositing path. Click-through is toggled in SetClickThrough.
-            // WS_EX_NOREDIRECTIONBITMAP was tried and broke DWM thumbnail
-            // compositing (we're the destination of DwmRegisterThumbnail and
-            // DWM needs the redirection surface to draw into).
+            // WS_EX_NOREDIRECTIONBITMAP was tried and broke our D3D11 swap
+            // chain — DWM needs the redirection surface to composite from.
             cp.ExStyle |= 0x80;
             return cp;
         }
@@ -106,21 +99,26 @@ internal sealed class OverviewOverlay : Form
     }
 
     /// <summary>
-    /// Toggle <c>WS_EX_LAYERED</c> at runtime. Normally avoided — layered
-    /// compositing carries a DWM redirection-surface cost even at
-    /// <c>LWA_ALPHA 255</c> — but adding it kicks DWM's composition state
-    /// and can break an otherwise sticky background-throttle.
+    /// Apply mode-dependent ex-style flags in a single round-trip:
+    /// <c>WS_EX_LAYERED</c> (kicks DWM composition — used in Panning to
+    /// defeat background-throttle) and <c>WS_EX_NOACTIVATE</c> (prevents
+    /// the form from becoming foreground).
     /// </summary>
-    public void SetLayered(bool enable)
+    public void SetModeStyle(bool layered, bool noActivate)
     {
         if (!IsHandleCreated) return;
         HWND h = (HWND)Handle;
         int ex = PInvoke.GetWindowLong(h, WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE);
-        int flag = (int)WINDOW_EX_STYLE.WS_EX_LAYERED;
-        int updated = enable ? (ex | flag) : (ex & ~flag);
+        int layeredFlag = (int)WINDOW_EX_STYLE.WS_EX_LAYERED;
+        int noActivateFlag = (int)WINDOW_EX_STYLE.WS_EX_NOACTIVATE;
+        int updated = ex;
+        updated = layered    ? (updated | layeredFlag)    : (updated & ~layeredFlag);
+        updated = noActivate ? (updated | noActivateFlag) : (updated & ~noActivateFlag);
         if (updated == ex) return;
+
+        bool layeredJustAdded = (ex & layeredFlag) == 0 && layered;
         PInvoke.SetWindowLong(h, WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE, updated);
-        if (enable)
+        if (layeredJustAdded)
         {
             // Without SetLayeredWindowAttributes after adding WS_EX_LAYERED the
             // window paints as fully transparent until attributes are set.

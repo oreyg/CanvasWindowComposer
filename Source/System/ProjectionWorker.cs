@@ -19,15 +19,15 @@ internal sealed class ProjectionWorker : IDisposable
     private readonly IWindowApi _win32;
     private readonly Thread _thread;
     private readonly ManualResetEventSlim _signal = new(false);
-    // Held while the worker is inside _win32.BatchMove. ClearPending takes
-    // this lock so callers can't race a sync BatchMove against an in-flight
-    // worker batch on the same HWNDs (would scramble WM_WINDOWPOSCHANGING/
-    // CHANGED ordering and leave app client state stale).
+    // Held while the worker is inside _win32.BatchMove. ClearPending grabs
+    // this briefly after cancelling so the follow-up sync BatchMove can't
+    // race the in-flight worker batch on the same HWNDs.
     private readonly object _processLock = new();
-    // Single source of truth for "is this worker still alive?" — replaces the
-    // old _alive volatile. Wait() observes it (cancellable wait), the loop
-    // checks it before starting a new batch, and Dispose triggers shutdown.
-    private readonly CancellationTokenSource _cts = new();
+    // Doubles as the shutdown signal AND the in-flight-batch canceller.
+    // ClearPending cancels + replaces with a fresh CTS so the next batch has
+    // a live token; Dispose cancels without replacing.
+    private CancellationTokenSource _cts = new();
+    private volatile bool _disposed;
     private Job? _pending;
 
     private sealed class Job
@@ -59,13 +59,16 @@ internal sealed class ProjectionWorker : IDisposable
     }
 
     /// <summary>
-    /// Drop any batch that hasn't been applied yet AND wait for the worker to
-    /// finish whatever batch it's currently inside. Callers that follow this
-    /// with their own sync BatchMove (e.g. ReprojectSync) need that guarantee
-    /// to avoid concurrent SetWindowPos calls on the same HWNDs.
+    /// Drop any queued batch and cancel the in-flight one if any. The
+    /// in-flight BatchMove exits between items instead of finalizing -
+    /// callers that follow up with their own sync BatchMove get to run
+    /// without waiting for the full batch to complete.
     /// </summary>
     public void ClearPending()
     {
+        var prev = Interlocked.Exchange(ref _cts, new CancellationTokenSource());
+        prev.Cancel();
+        prev.Dispose();
         lock (_processLock)
         {
             Interlocked.Exchange(ref _pending, null);
@@ -74,37 +77,31 @@ internal sealed class ProjectionWorker : IDisposable
 
     private void Loop()
     {
-        CancellationToken token = _cts.Token;
-        try
+        while (!_disposed)
         {
-            while (true)
+            CancellationTokenSource cts = _cts;
+            try
             {
-                _signal.Wait(token);
-                _signal.Reset();
-
-                // Take the job AND run BatchMove as one critical section. Otherwise
-                // ClearPending can observe _pending == null (we already grabbed it),
-                // acquire _processLock instantly, and let the caller start its own
-                // BatchMove before we enter the lock — concurrent SetWindowPos on
-                // the same HWNDs.
-                lock (_processLock)
-                {
-                    Job? job = Interlocked.Exchange(ref _pending, null);
-                    // Cancellation takes precedence over any pending batch — we
-                    // don't want to start new SetWindowPos work after Dispose.
-                    if (job != null && !token.IsCancellationRequested)
-                        _win32.BatchMove(job.Items, isAsync: job.IsAsync, isTransient: job.IsTransient);
-                }
+                _signal.Wait(cts.Token);
             }
-        }
-        catch (OperationCanceledException)
-        {
-            // Normal shutdown.
+            catch (OperationCanceledException)
+            {
+                continue; // _cts was swapped or disposed — re-read next iteration.
+            }
+            _signal.Reset();
+            if (_disposed) break;
+            lock (_processLock)
+            {
+                Job? job = Interlocked.Exchange(ref _pending, null);
+                if (job != null && !cts.IsCancellationRequested && !_disposed)
+                    _win32.BatchMove(job.Items, isAsync: job.IsAsync, isTransient: job.IsTransient, ct: cts.Token);
+            }
         }
     }
 
     public void Dispose()
     {
+        _disposed = true;
         _cts.Cancel();
         _thread.Join(TimeSpan.FromSeconds(1));
         _signal.Dispose();

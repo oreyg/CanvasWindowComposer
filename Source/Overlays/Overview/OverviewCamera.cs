@@ -66,9 +66,9 @@ internal sealed class OverviewCamera
     /// <summary>Center on a world rect (does not change zoom).</summary>
     public void CenterOnWorld(double worldX, double worldY, double worldW, double worldH)
     {
-        var vs = _screens.VirtualScreen;
-        X = worldX + worldW / 2 - vs.Width / (2 * Zoom);
-        Y = worldY + worldH / 2 - vs.Height / (2 * Zoom);
+        var pb = _screens.PrimaryBounds;
+        X = worldX + worldW / 2 - pb.Width / (2 * Zoom);
+        Y = worldY + worldH / 2 - pb.Height / (2 * Zoom);
     }
 
     /// <summary>World coordinates corresponding to a virtual-screen pixel.</summary>
@@ -78,16 +78,16 @@ internal sealed class OverviewCamera
     }
 
     /// <summary>
-    /// Camera position matching the centered viewport frame in the grid shader.
-    /// Used when handing the overview camera back to the main canvas on close.
+    /// Camera position for the main canvas on close. Uses primary monitor
+    /// dimensions so the result is independent of how many monitors are attached.
     /// </summary>
     public (double x, double y) ViewportCamera
     {
         get
         {
-            var vs = _screens.VirtualScreen;
-            double ox = vs.Width * (1.0 / Zoom - 1.0) / 2.0;
-            double oy = vs.Height * (1.0 / Zoom - 1.0) / 2.0;
+            var pb = _screens.PrimaryBounds;
+            double ox = pb.Width * (1.0 / Zoom - 1.0) / 2.0;
+            double oy = pb.Height * (1.0 / Zoom - 1.0) / 2.0;
             return (X + ox, Y + oy);
         }
     }

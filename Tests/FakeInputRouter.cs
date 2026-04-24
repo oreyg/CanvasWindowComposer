@@ -65,6 +65,22 @@ internal sealed class FakeInputRouter : IInputRouter
         ClearExtraCalls++;
     }
 
+    public int EnableMiddleButtonBlockCalls;
+    public int DisableMiddleButtonBlockCalls;
+    public bool MiddleButtonBlockEnabled;
+
+    public void EnableMiddleButtonBlock()
+    {
+        EnableMiddleButtonBlockCalls++;
+        MiddleButtonBlockEnabled = true;
+    }
+
+    public void DisableMiddleButtonBlock()
+    {
+        DisableMiddleButtonBlockCalls++;
+        MiddleButtonBlockEnabled = false;
+    }
+
     public bool TryDrainPanDelta(out int dx, out int dy)
     {
         dx = PendingPanDx;

@@ -6,11 +6,11 @@ using Vortice.D3DCompiler;
 namespace CanvasDesktop;
 
 /// <summary>
-/// Desktop wallpaper pass. Samples one WGC-captured texture (Progman/WorkerW)
-/// at a UV sub-rect that corresponds to this monitor's slice of the virtual
-/// screen, blended over the grid with a separately-supplied opacity. Opacity
-/// is computed upstream (mode + zoom aware); this pass just renders the params
-/// it was last handed.
+/// Desktop wallpaper pass. Samples the DWM shared surface of Progman/WorkerW
+/// (owned + opened by <see cref="OverviewThumbnails"/>) at a UV sub-rect
+/// corresponding to this monitor's slice of the virtual screen. Opacity is
+/// computed upstream (mode + zoom aware); this pass just renders the params
+/// it was last handed against the SRV it was last handed.
 /// </summary>
 internal sealed class DesktopPass : IDisposable
 {
@@ -23,7 +23,6 @@ internal sealed class DesktopPass : IDisposable
     private ID3D11PixelShader? _ps;
     private ID3D11Buffer? _cb;
 
-    private IntPtr _hwnd;
     private readonly object _lock = new();
     private float _uvL, _uvT, _uvR, _uvB;
     private float _opacity;
@@ -52,19 +51,6 @@ internal sealed class DesktopPass : IDisposable
             32, BindFlags.ConstantBuffer, ResourceUsage.Dynamic, CpuAccessFlags.Write));
     }
 
-    public void RegisterWindow(IntPtr hwnd, WindowCapture capture)
-    {
-        _hwnd = hwnd;
-        capture.Register(hwnd);
-    }
-
-    public void UnregisterWindow(WindowCapture capture)
-    {
-        if (_hwnd == IntPtr.Zero) return;
-        capture.Unregister(_hwnd);
-        _hwnd = IntPtr.Zero;
-    }
-
     public void SetParams(float uvL, float uvT, float uvR, float uvB, float opacity)
     {
         lock (_lock)
@@ -74,11 +60,9 @@ internal sealed class DesktopPass : IDisposable
         }
     }
 
-    public void Render(ID3D11DeviceContext ctx, WindowCapture capture,
+    public void Render(ID3D11DeviceContext ctx, ID3D11ShaderResourceView? srv,
         ID3D11SamplerState sampler, ID3D11BlendState blendState)
     {
-        if (_hwnd == IntPtr.Zero) return;
-        var srv = capture.Sample(_hwnd, ctx);
         if (srv == null) return;
 
         float uvL, uvT, uvR, uvB, op;
