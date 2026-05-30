@@ -14,6 +14,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
     private readonly Canvas _mainCanvas;
     private readonly WindowManager _wm;
     private readonly IWindowApi _win32;
+    private readonly IAppConfig _appConfig;
     private readonly IScreens _screens;
     private readonly IInputRouter _input;
     private readonly OverviewState _state = new();
@@ -78,11 +79,12 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
     private int _dragIndex = -1;
     private int _dragStartVx, _dragStartVy;
 
-    public OverviewManager(Canvas mainCanvas, WindowManager wm, IWindowApi win32, IInputRouter input, IScreens? screens = null)
+    public OverviewManager(Canvas mainCanvas, WindowManager wm, IWindowApi win32, IInputRouter input, IAppConfig appConfig, IScreens? screens = null)
     {
         _mainCanvas = mainCanvas;
         _wm = wm;
         _win32 = win32;
+        _appConfig = appConfig;
         _input = input;
         _screens = screens ?? WinFormsScreens.Instance;
         _camera = new OverviewCamera(_screens);
@@ -93,6 +95,12 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
         // Reference held only to keep the binding alive for the lifetime of this manager.
         _ = new OverviewInputs(this, input, mainCanvas);
+    }
+
+    public void RefreshConfig()
+    {
+        if (CurrentMode != OverviewMode.Hidden)
+            ApplyConfig();
     }
 
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)
@@ -283,7 +291,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
             p.Show();
         }
         if (_passes.Count > 0) _passes[0].Activate();
-        if (CurrentMode == OverviewMode.Panning)
+        if (ShouldShowScreenFixedWindowsDuringPan)
             RaiseMyDockFinderWindowsAboveOverview();
 
         // Attach frame tick to the first pass's grid (drives inertia)
@@ -328,7 +336,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
     private void ApplyConfig()
     {
-        _windows.Refresh(includeScreenFixedWindows: CurrentMode == OverviewMode.Panning);
+        _windows.Refresh(includeScreenFixedWindows: ShouldShowScreenFixedWindowsDuringPan);
 
         // WS_EX_LAYERED is added in Panning and removed in Zooming. Panning
         // is where background-throttle freezes were seen after losing
@@ -344,7 +352,7 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
             p.SetClickThrough(!_cfg.InputEnabled);
         }
         _thumbnails.Reconcile();
-        if (CurrentMode == OverviewMode.Panning && AnyPassVisible())
+        if (ShouldShowScreenFixedWindowsDuringPan && AnyPassVisible())
             RaiseMyDockFinderWindowsAboveOverview();
         else if (CurrentMode == OverviewMode.Zooming && AnyPassVisible())
             RaiseOverviewPassesAboveTopmostWindows();
@@ -363,6 +371,11 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
             if (p.Visible) return true;
         }
         return false;
+    }
+
+    private bool ShouldShowScreenFixedWindowsDuringPan
+    {
+        get { return CurrentMode == OverviewMode.Panning && _appConfig.ShowScreenFixedWindowsDuringPan; }
     }
 
     private void RaiseOverviewPassesAboveTopmostWindows()
