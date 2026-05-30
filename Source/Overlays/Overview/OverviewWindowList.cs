@@ -13,7 +13,9 @@ namespace CanvasDesktop;
 /// </summary>
 internal sealed class OverviewWindowList
 {
-    public readonly record struct Entry(IntPtr HWnd, WorldRect World);
+    // ScreenFixed entries are visible in panning thumbnails but keep their
+    // current screen rect instead of following the canvas camera.
+    public readonly record struct Entry(IntPtr HWnd, WorldRect World, bool ScreenFixed = false);
 
     private readonly Canvas _canvas;
     private readonly IWindowApi _win32;
@@ -30,20 +32,61 @@ internal sealed class OverviewWindowList
     }
 
     /// <summary>Rebuild the list from canvas + Z-order. Resets selection.</summary>
-    public void Refresh()
+    public void Refresh(bool includeScreenFixedWindows = false)
     {
         _windows.Clear();
         SelectedIndex = -1;
         _win32.EnumWindows(hWnd =>
         {
-            if (_canvas.Windows.TryGetValue(hWnd, out var world) &&
-                world.State == WindowState.Normal &&
-                !world.PinnedToScreen)
+            if (_canvas.Windows.TryGetValue(hWnd, out var world))
             {
-                _windows.Add(new Entry(hWnd, world));
+                AddCanvasWindow(hWnd, world, includeScreenFixedWindows);
+            }
+            else if (includeScreenFixedWindows && TryGetUntrackedMaximizedWindow(hWnd, out var fixedWorld))
+            {
+                _windows.Add(new Entry(hWnd, fixedWorld, ScreenFixed: true));
             }
             return true;
         });
+    }
+
+    private void AddCanvasWindow(IntPtr hWnd, WorldRect world, bool includeScreenFixedWindows)
+    {
+        if (world.State == WindowState.Minimized)
+            return;
+
+        bool screenFixed = world.PinnedToScreen || world.State == WindowState.Maximized;
+        if (!screenFixed || includeScreenFixedWindows)
+            _windows.Add(new Entry(hWnd, world, screenFixed));
+    }
+
+    private bool TryGetUntrackedMaximizedWindow(IntPtr hWnd, out WorldRect world)
+    {
+        world = default;
+
+        if (!_win32.IsWindowVisible(hWnd))
+            return false;
+        if (_win32.GetWindowProcessId(hWnd) == (uint)Environment.ProcessId)
+            return false;
+
+        int style = _win32.GetWindowStyle(hWnd);
+        if ((style & (int)WINDOW_STYLE.WS_MINIMIZE) != 0 ||
+            (style & (int)WINDOW_STYLE.WS_MAXIMIZE) == 0)
+            return false;
+
+        var (x, y, w, h) = _win32.GetWindowRect(hWnd);
+        if (w <= 0 || h <= 0)
+            return false;
+
+        world = new WorldRect
+        {
+            X = x,
+            Y = y,
+            W = Math.Max(1, w),
+            H = Math.Max(1, h),
+            State = WindowState.Maximized
+        };
+        return true;
     }
 
     public void Clear()

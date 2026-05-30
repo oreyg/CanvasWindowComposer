@@ -27,6 +27,17 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
     private const double ExtentsPaddingRatio = 0.1;
     private const double MouseWheelDeltaPerNotch = 120.0;
+    private static readonly string[] MyDockFinderProcessHints =
+    {
+        "mydockfinder",
+        "mydock",
+        "myfinder"
+    };
+    private static readonly string[] MyDockFinderExactProcessNames =
+    {
+        "dock_64",
+        "dock"
+    };
 
     private readonly InertiaTracker _inertia = new();
     private readonly object _inertiaQueueLock = new();
@@ -263,7 +274,6 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
         _wm.SuspendReconcile = true;
         _wm.UnclipAll();
 
-        _windows.Refresh();
         _thumbnails.Show();
 
         ApplyConfig();
@@ -273,6 +283,8 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
             p.Show();
         }
         if (_passes.Count > 0) _passes[0].Activate();
+        if (CurrentMode == OverviewMode.Panning)
+            RaiseMyDockFinderWindowsAboveOverview();
 
         // Attach frame tick to the first pass's grid (drives inertia)
         if (_passes.Count > 0 && _passes[0].Grid != null)
@@ -316,6 +328,8 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
 
     private void ApplyConfig()
     {
+        _windows.Refresh(includeScreenFixedWindows: CurrentMode == OverviewMode.Panning);
+
         // WS_EX_LAYERED is added in Panning and removed in Zooming. Panning
         // is where background-throttle freezes were seen after losing
         // foreground (click lands on an underlying window on drag release);
@@ -330,12 +344,118 @@ internal sealed class OverviewManager : IDisposable, IOverviewController
             p.SetClickThrough(!_cfg.InputEnabled);
         }
         _thumbnails.Reconcile();
+        if (CurrentMode == OverviewMode.Panning && AnyPassVisible())
+            RaiseMyDockFinderWindowsAboveOverview();
+        else if (CurrentMode == OverviewMode.Zooming && AnyPassVisible())
+            RaiseOverviewPassesAboveTopmostWindows();
 
         // During Zooming, real-window positions don't need to track the camera
         // (click-through is off — clicks land on the overview form, not real
         // windows). Suppressing projection eliminates the worker-job wait at
         // close-time ReprojectSync.
         _wm.SuspendProjection = (CurrentMode == OverviewMode.Zooming);
+    }
+
+    private bool AnyPassVisible()
+    {
+        foreach (var p in _passes)
+        {
+            if (p.Visible) return true;
+        }
+        return false;
+    }
+
+    private void RaiseOverviewPassesAboveTopmostWindows()
+    {
+        HWND topMost = (HWND)new IntPtr(-1);
+        var flags =
+            SET_WINDOW_POS_FLAGS.SWP_NOMOVE |
+            SET_WINDOW_POS_FLAGS.SWP_NOSIZE |
+            SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE |
+            SET_WINDOW_POS_FLAGS.SWP_NOSENDCHANGING;
+
+        foreach (var p in _passes)
+        {
+            if (p.IsHandleCreated)
+                PInvoke.SetWindowPos((HWND)p.Handle, topMost, 0, 0, 0, 0, flags);
+        }
+    }
+
+    private void RaiseMyDockFinderWindowsAboveOverview()
+    {
+        var windows = new List<IntPtr>();
+        uint ownPid = (uint)Environment.ProcessId;
+
+        _win32.EnumWindows(hWnd =>
+        {
+            if (IsMyDockFinderWindow(hWnd, ownPid))
+                windows.Add(hWnd);
+            return true;
+        });
+
+        HWND topMost = (HWND)new IntPtr(-1);
+        var flags =
+            SET_WINDOW_POS_FLAGS.SWP_NOMOVE |
+            SET_WINDOW_POS_FLAGS.SWP_NOSIZE |
+            SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE |
+            SET_WINDOW_POS_FLAGS.SWP_NOSENDCHANGING;
+
+        // EnumWindows is topmost-first; raising bottom-to-top preserves the
+        // dock/finder order while still putting the group above the overlay.
+        for (int i = windows.Count - 1; i >= 0; i--)
+        {
+            PInvoke.SetWindowPos((HWND)windows[i], topMost, 0, 0, 0, 0, flags);
+        }
+    }
+
+    private bool IsMyDockFinderWindow(IntPtr hWnd, uint ownPid)
+    {
+        if (!_win32.IsWindowVisible(hWnd))
+            return false;
+
+        uint pid = _win32.GetWindowProcessId(hWnd);
+        if (pid == 0 || pid == ownPid)
+            return false;
+
+        if (!IsMyDockFinderProcess(pid))
+            return false;
+
+        int style = _win32.GetWindowStyle(hWnd);
+        if ((style & (int)WINDOW_STYLE.WS_MINIMIZE) != 0)
+            return false;
+
+        var (_, _, w, h) = _win32.GetWindowRect(hWnd);
+        return w > 0 && h > 0;
+    }
+
+    private bool IsMyDockFinderProcess(uint pid)
+    {
+        var (name, exe) = _win32.GetProcessInfo(pid);
+        return IsMyDockFinderProcessName(name) || IsMyDockFinderProcessName(exe);
+    }
+
+    private static bool IsMyDockFinderProcessName(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        string normalized = value.Trim();
+        if (normalized.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            normalized = normalized[..^4];
+
+        foreach (string name in MyDockFinderExactProcessNames)
+        {
+            if (string.Equals(normalized, name, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        foreach (string name in MyDockFinderProcessHints)
+        {
+            if (value.Contains(name, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>

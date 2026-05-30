@@ -52,6 +52,65 @@ public class OverviewWindowListTests
     }
 
     [Fact]
+    public void Refresh_SkipsPinnedWindowsByDefault()
+    {
+        var (canvas, api, list) = Make();
+        canvas.SetWindow((IntPtr)1, 100, 100, 400, 300);
+        canvas.SetPinnedToScreen((IntPtr)1, true);
+        api.AddWindow((IntPtr)1, 100, 100, 400, 300);
+
+        list.Refresh();
+
+        Assert.Empty(list.Windows);
+    }
+
+    [Fact]
+    public void Refresh_IncludesPinnedWindowsWhenScreenFixedAllowed()
+    {
+        var (canvas, api, list) = Make();
+        canvas.SetWindow((IntPtr)1, 100, 100, 400, 300);
+        canvas.SetPinnedToScreen((IntPtr)1, true);
+        api.AddWindow((IntPtr)1, 100, 100, 400, 300);
+
+        list.Refresh(includeScreenFixedWindows: true);
+
+        Assert.Single(list.Windows);
+        Assert.Equal((IntPtr)1, list.Windows[0].HWnd);
+        Assert.True(list.Windows[0].ScreenFixed);
+    }
+
+    [Fact]
+    public void Refresh_IncludesMaximizedWindowsWhenScreenFixedAllowed()
+    {
+        var (canvas, api, list) = Make();
+        canvas.SetWindow((IntPtr)1, 100, 100, 400, 300);
+        canvas.MaximizeWindow((IntPtr)1);
+        api.AddWindow((IntPtr)1, 0, 0, 1920, 1080);
+
+        list.Refresh(includeScreenFixedWindows: true);
+
+        Assert.Single(list.Windows);
+        Assert.Equal((IntPtr)1, list.Windows[0].HWnd);
+        Assert.True(list.Windows[0].ScreenFixed);
+    }
+
+    [Fact]
+    public void Refresh_IncludesUntrackedMaximizedWindowsWhenScreenFixedAllowed()
+    {
+        var (_, api, list) = Make();
+        api.AddWindow((IntPtr)1, 0, 0, 1920, 1080,
+            pid: 4242u,
+            style: (int)Windows.Win32.UI.WindowsAndMessaging.WINDOW_STYLE.WS_MAXIMIZE);
+
+        list.Refresh(includeScreenFixedWindows: true);
+
+        Assert.Single(list.Windows);
+        Assert.Equal((IntPtr)1, list.Windows[0].HWnd);
+        Assert.True(list.Windows[0].ScreenFixed);
+        Assert.Equal(WindowState.Maximized, list.Windows[0].World.State);
+    }
+
+    [Fact]
     public void Refresh_SkipsWindowsNotInCanvas()
     {
         var (_, api, list) = Make();
