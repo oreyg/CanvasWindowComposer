@@ -109,6 +109,20 @@ public class WindowManagerTests
         Assert.Equal(2, api.LastBatch.Count);
     }
 
+    [Fact]
+    public void Reproject_SkipsPinnedWindows()
+    {
+        var (canvas, api, wm) = Create();
+
+        canvas.SetWindow((IntPtr)1, 100, 100, 400, 300);
+        canvas.SetPinnedToScreen((IntPtr)1, true);
+        api.AddWindow((IntPtr)1, 100, 100, 400, 300);
+
+        wm.Reproject();
+
+        Assert.Empty(api.LastBatch);
+    }
+
     // ==================== RECONCILE ====================
 
     [Fact]
@@ -292,6 +306,23 @@ public class WindowManagerTests
         Assert.Equal(600, item.Rect.H);
     }
 
+    [Fact]
+    public void Reset_DoesNotMovePinnedWindowsBackToCanvas()
+    {
+        var (canvas, api, wm) = Create();
+
+        canvas.SetWindow((IntPtr)1, 3000, 4000, 800, 600);
+        canvas.SetPinnedToScreen((IntPtr)1, true);
+        api.AddWindow((IntPtr)1, 200, 100, 800, 600);
+
+        wm.Reset();
+
+        Assert.Empty(api.LastBatch);
+        Assert.Equal(200, api.Windows[(IntPtr)1].X);
+        Assert.Equal(100, api.Windows[(IntPtr)1].Y);
+        Assert.Empty(canvas.Windows);
+    }
+
     // ==================== UNCLIP / RECLIP ====================
 
     [Fact]
@@ -327,6 +358,49 @@ public class WindowManagerTests
 
         wm.ReclipAll();
         Assert.Single(api.ClippedWindows);
+    }
+
+    // ==================== PINNED TO SCREEN ====================
+
+    [Fact]
+    public void SetWindowPinnedToScreen_UnclipsWindowAndSkipsFutureProjection()
+    {
+        var (canvas, api, wm) = Create();
+
+        canvas.SetWindow((IntPtr)1, 5000, 5000, 400, 300);
+        api.AddWindow((IntPtr)1, 0, 0, 400, 300);
+        wm.Reproject();
+        Assert.Contains((IntPtr)1, api.ClippedWindows);
+
+        wm.SetWindowPinnedToScreen((IntPtr)1, true);
+        api.LastBatch.Clear();
+        wm.Reproject();
+
+        Assert.True(canvas.IsPinnedToScreen((IntPtr)1));
+        Assert.DoesNotContain((IntPtr)1, api.ClippedWindows);
+        Assert.Empty(api.LastBatch);
+    }
+
+    [Fact]
+    public void SetWindowPinnedToScreen_UnpinConvertsCurrentScreenPositionToWorld()
+    {
+        var (canvas, api, wm) = Create();
+
+        canvas.Pan(100, 50);
+        canvas.SetWindow((IntPtr)1, 300, 400, 400, 300);
+        api.AddWindow((IntPtr)1, 300, 400, 400, 300);
+        wm.SetWindowPinnedToScreen((IntPtr)1, true);
+
+        api.Windows[(IntPtr)1].X = 700;
+        api.Windows[(IntPtr)1].Y = 250;
+
+        wm.SetWindowPinnedToScreen((IntPtr)1, false);
+
+        var world = canvas.Windows[(IntPtr)1];
+        var expected = canvas.ScreenToWorld(700, 250);
+        Assert.False(canvas.IsPinnedToScreen((IntPtr)1));
+        Assert.Equal(expected.x, world.X);
+        Assert.Equal(expected.y, world.Y);
     }
 
     // ==================== COLLAPSED ====================

@@ -69,6 +69,9 @@ internal sealed class ForegroundCoordinator
         if (_canvas.HasWindow(hwnd))
         {
             var world = _canvas.Windows[hwnd];
+            if (world.PinnedToScreen)
+                return;
+
             var r = _canvas.WorldToScreen(world);
             if (!IsOnAnyScreen(r))
             {
