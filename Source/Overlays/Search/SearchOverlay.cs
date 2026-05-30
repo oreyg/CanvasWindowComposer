@@ -15,8 +15,6 @@ internal sealed class SearchOverlay : Form
     private readonly TextBox _searchBox;
     private readonly Label _hintLabel;
     private readonly ListBox _resultsList;
-    private readonly CheckBox _pinCheckBox;
-    private bool _updatingPinCheckBox;
 
     // Current search results
     private readonly List<SearchResult> _results = new();
@@ -35,8 +33,6 @@ internal sealed class SearchOverlay : Form
     }
 
     private const string HintText = "Search windows...";
-    private const string PinText = "Pin to monitor";
-    private const string PinnedPrefix = "[Pinned] ";
     private const double OpacityIdle = 0.6;
     private const double OpacityActive = 0.92;
     private const int MaxVisibleResults = 5;
@@ -56,11 +52,12 @@ internal sealed class SearchOverlay : Form
     private const float SearchBoxFontSize = 12f;
     private const float HintFontSize = 11f;
     private const float ResultFontSize = 10f;
-    private const float PinFontSize = 9.5f;
     private const int ResultsListTopOffset = 2;
     private const int ResultTextPaddingX = 6;
     private const int ResultTextPaddingY = 4;
-    private const int PinCheckHeightBase = 24;
+    private const int PinCheckSizeBase = 14;
+    private const int PinCheckMarginLeftBase = 7;
+    private const int PinCheckTextGapBase = 8;
 
     // DPI-scaled dimensions
     private readonly int _formWidth;
@@ -68,7 +65,9 @@ internal sealed class SearchOverlay : Form
     private readonly int _padding;
     private readonly int _itemHeight;
     private readonly int _cornerRadius;
-    private readonly int _pinCheckHeight;
+    private readonly int _pinCheckSize;
+    private readonly int _pinCheckMarginLeft;
+    private readonly int _pinCheckTextGap;
 
     public SearchOverlay(Canvas canvas, WindowManager wm, IWindowApi positioner, IInputRouter input, IScreens? screens = null)
     {
@@ -90,7 +89,9 @@ internal sealed class SearchOverlay : Form
         _padding = S(PaddingBase);
         _itemHeight = S(ItemHeightBase);
         _cornerRadius = S(CornerRadiusBase);
-        _pinCheckHeight = S(PinCheckHeightBase);
+        _pinCheckSize = S(PinCheckSizeBase);
+        _pinCheckMarginLeft = S(PinCheckMarginLeftBase);
+        _pinCheckTextGap = S(PinCheckTextGapBase);
 
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
@@ -140,22 +141,7 @@ internal sealed class SearchOverlay : Form
         };
         _resultsList.DrawItem += OnDrawItem;
         _resultsList.MouseClick += OnResultClick;
-        _resultsList.SelectedIndexChanged += (_, _) => UpdatePinCheckBox();
         Controls.Add(_resultsList);
-
-        _pinCheckBox = new CheckBox
-        {
-            Text = PinText,
-            Location = new Point(_padding, _resultsList.Bottom + _padding / 2),
-            Size = new Size(_formWidth - _padding * 2, _pinCheckHeight),
-            Font = new Font("Segoe UI", PinFontSize * dpiScale),
-            BackColor = Color.FromArgb(30, 30, 30),
-            ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat,
-            Visible = false
-        };
-        _pinCheckBox.CheckedChanged += OnPinCheckChanged;
-        Controls.Add(_pinCheckBox);
 
         KeyDown += OnKeyDown;
         Deactivate += (_, _) => HideOverlay();
@@ -201,7 +187,6 @@ internal sealed class SearchOverlay : Form
             _results.Clear();
             _resultsList.Items.Clear();
             _resultsList.Size = new Size(_resultsList.Width, 0);
-            _pinCheckBox.Visible = false;
             Size = new Size(_formWidth, _formBaseHeight);
             _hintLabel.Visible = true;
             Opacity = OpacityIdle;
@@ -248,14 +233,13 @@ internal sealed class SearchOverlay : Form
         foreach (var r in results)
         {
             _results.Add(r);
-            _resultsList.Items.Add(FormatDisplay(r));
+            _resultsList.Items.Add(r.Display);
         }
 
         UpdateResultsLayout();
 
         if (_resultsList.Items.Count > 0)
             _resultsList.SelectedIndex = 0;
-        UpdatePinCheckBox();
     }
 
     private void OnKeyDown(object? sender, KeyEventArgs e)
@@ -289,11 +273,25 @@ internal sealed class SearchOverlay : Form
                 SelectCurrent();
                 e.SuppressKeyPress = true;
                 break;
+
+            case Keys.Space:
+                TogglePinnedAt(_resultsList.SelectedIndex);
+                Opacity = OpacityActive;
+                e.SuppressKeyPress = true;
+                break;
         }
     }
 
     private void OnResultClick(object? sender, MouseEventArgs e)
     {
+        int idx = _resultsList.IndexFromPoint(e.Location);
+        if (idx >= 0 && idx < _results.Count && GetPinCheckBounds(idx).Contains(e.Location))
+        {
+            TogglePinnedAt(idx);
+            Opacity = OpacityActive;
+            return;
+        }
+
         SelectCurrent();
     }
 
@@ -332,24 +330,15 @@ internal sealed class SearchOverlay : Form
         HideOverlay();
     }
 
-    private void OnPinCheckChanged(object? sender, EventArgs e)
+    private void TogglePinnedAt(int idx)
     {
-        if (_updatingPinCheckBox)
-            return;
-
-        int idx = _resultsList.SelectedIndex;
         if (idx < 0 || idx >= _results.Count)
             return;
 
         var hWnd = _results[idx].HWnd;
-        RestoreOrShowWindow(hWnd);
-        bool pinned = _wm.SetWindowPinnedToScreen(hWnd, _pinCheckBox.Checked);
-
-        RefreshResultItem(idx);
-
-        _updatingPinCheckBox = true;
-        _pinCheckBox.Checked = pinned;
-        _updatingPinCheckBox = false;
+        bool nextPinned = !_canvas.IsPinnedToScreen(hWnd);
+        _wm.SetWindowPinnedToScreen(hWnd, nextPinned);
+        _resultsList.Invalidate(_resultsList.GetItemRectangle(idx));
     }
 
     private void UpdateResultsLayout()
@@ -357,44 +346,7 @@ internal sealed class SearchOverlay : Form
         int listHeight = Math.Min(_results.Count, MaxVisibleResults) * _itemHeight;
         _resultsList.Size = new Size(_resultsList.Width, listHeight);
 
-        bool showPin = _results.Count > 0;
-        _pinCheckBox.Visible = showPin;
-        if (showPin)
-        {
-            _pinCheckBox.Location = new Point(_padding, _resultsList.Bottom + _padding / 2);
-            _pinCheckBox.Size = new Size(_formWidth - _padding * 2, _pinCheckHeight);
-        }
-
-        int height = _formBaseHeight + listHeight + _padding / 2;
-        if (showPin)
-            height += _pinCheckHeight + _padding / 2;
-        Size = new Size(_formWidth, height);
-    }
-
-    private void UpdatePinCheckBox()
-    {
-        int idx = _resultsList.SelectedIndex;
-        bool hasSelection = idx >= 0 && idx < _results.Count;
-
-        _updatingPinCheckBox = true;
-        _pinCheckBox.Enabled = hasSelection;
-        _pinCheckBox.Checked = hasSelection && _canvas.IsPinnedToScreen(_results[idx].HWnd);
-        _updatingPinCheckBox = false;
-    }
-
-    private void RefreshResultItem(int idx)
-    {
-        if (idx < 0 || idx >= _results.Count)
-            return;
-
-        _resultsList.Items[idx] = FormatDisplay(_results[idx]);
-    }
-
-    private string FormatDisplay(SearchResult result)
-    {
-        return _canvas.IsPinnedToScreen(result.HWnd)
-            ? PinnedPrefix + result.Display
-            : result.Display;
+        Size = new Size(_formWidth, _formBaseHeight + listHeight + _padding / 2);
     }
 
     private static void RestoreOrShowWindow(IntPtr hWnd)
@@ -417,9 +369,48 @@ internal sealed class SearchOverlay : Form
         using var bgBrush = new SolidBrush(bgColor);
         e.Graphics.FillRectangle(bgBrush, e.Bounds);
 
+        if (e.Index < _results.Count)
+            DrawPinCheckBox(e.Graphics, GetPinCheckBounds(e.Index), _canvas.IsPinnedToScreen(_results[e.Index].HWnd));
+
         string text = _resultsList.Items[e.Index]?.ToString() ?? "";
         using var textBrush = new SolidBrush(Color.White);
+        int textLeft = e.Bounds.X + _pinCheckMarginLeft + _pinCheckSize + _pinCheckTextGap;
         e.Graphics.DrawString(text, e.Font!, textBrush,
-            e.Bounds.X + ResultTextPaddingX, e.Bounds.Y + ResultTextPaddingY);
+            textLeft + ResultTextPaddingX, e.Bounds.Y + ResultTextPaddingY);
+    }
+
+    private Rectangle GetPinCheckBounds(int index)
+    {
+        var item = _resultsList.GetItemRectangle(index);
+        int size = Math.Min(_pinCheckSize, Math.Max(1, item.Height - 6));
+        return new Rectangle(
+            item.X + _pinCheckMarginLeft,
+            item.Y + (item.Height - size) / 2,
+            size,
+            size);
+    }
+
+    private static void DrawPinCheckBox(Graphics g, Rectangle bounds, bool isChecked)
+    {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+
+        using var fill = new SolidBrush(isChecked ? Color.FromArgb(70, 105, 190) : Color.FromArgb(55, 55, 55));
+        using var border = new Pen(isChecked ? Color.FromArgb(130, 160, 235) : Color.FromArgb(120, 120, 120));
+        g.FillRectangle(fill, bounds);
+        g.DrawRectangle(border, bounds);
+
+        if (!isChecked)
+            return;
+
+        using var checkPen = new Pen(Color.White, 2f)
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+            LineJoin = LineJoin.Round
+        };
+        var p1 = new Point(bounds.Left + bounds.Width / 4, bounds.Top + bounds.Height / 2);
+        var p2 = new Point(bounds.Left + bounds.Width / 2, bounds.Bottom - bounds.Height / 4);
+        var p3 = new Point(bounds.Right - bounds.Width / 5, bounds.Top + bounds.Height / 4);
+        g.DrawLines(checkPen, new[] { p1, p2, p3 });
     }
 }
