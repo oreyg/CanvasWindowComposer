@@ -227,7 +227,7 @@ internal sealed class WindowManager : IDisposable
 
         foreach (var (hWnd, world) in _canvas.Windows)
         {
-            if (world.State != WindowState.Normal)
+            if (world.State != WindowState.Normal || world.PinnedToScreen)
                 continue;
 
             var r = _canvas.WorldToScreen(world);
@@ -276,6 +276,9 @@ internal sealed class WindowManager : IDisposable
 
         if (!_canvas.Windows.TryGetValue(hWnd, out var world))
             return false;
+
+        if (world.PinnedToScreen)
+            return true;
 
         var r = _canvas.WorldToScreen(world);
 
@@ -415,6 +418,31 @@ internal sealed class WindowManager : IDisposable
         _lastScreen[hWnd] = (sx, sy, sw, sh);
     }
 
+    public bool SetWindowPinnedToScreen(IntPtr hWnd, bool pinned)
+    {
+        uint ownPid = (uint)Environment.ProcessId;
+        if (!_win32.IsManageable(hWnd, ownPid, allowMinimized: true))
+            return _canvas.IsPinnedToScreen(hWnd);
+
+        if (!_canvas.HasWindow(hWnd))
+            RegisterWindow(hWnd);
+
+        if (!_canvas.Windows.TryGetValue(hWnd, out var world))
+            return false;
+
+        if (pinned)
+            PinWindowToScreen(hWnd, world);
+        else
+            UnpinWindowFromScreen(hWnd);
+
+        return _canvas.IsPinnedToScreen(hWnd);
+    }
+
+    public bool ToggleWindowPinnedToScreen(IntPtr hWnd)
+    {
+        return SetWindowPinnedToScreen(hWnd, !_canvas.IsPinnedToScreen(hWnd));
+    }
+
     /// <summary>
     /// Register a single HWND if it passes the full "new window" filter chain
     /// (not already tracked, manageable, on current virtual desktop).
@@ -444,6 +472,8 @@ internal sealed class WindowManager : IDisposable
         foreach (var (hWnd, world) in _canvas.Windows)
         {
             if (!IsWindowActive(hWnd))
+                continue;
+            if (world.PinnedToScreen)
                 continue;
 
             var rect = new WindowRect((int)world.X, (int)world.Y, (int)world.W, (int)world.H);
@@ -481,6 +511,75 @@ internal sealed class WindowManager : IDisposable
             return false;
         int style = _win32.GetWindowStyle(hWnd);
         return (style & (int)WINDOW_STYLE.WS_MINIMIZE) == 0;
+    }
+
+    private void PinWindowToScreen(IntPtr hWnd, WorldRect world)
+    {
+        var rect = ResolvePinnedScreenRect(hWnd, world);
+
+        if (_clippedWindows.Remove(hWnd))
+            _win32.UnclipWindow(hWnd);
+
+        _canvas.SetPinnedToScreen(hWnd, true);
+        _lastScreen[hWnd] = (rect.X, rect.Y, rect.W, rect.H);
+        _win32.SetWindowPosition(hWnd, rect.X, rect.Y, rect.W, rect.H,
+            (uint)(SET_WINDOW_POS_FLAGS.SWP_NOZORDER | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE));
+    }
+
+    private void UnpinWindowFromScreen(IntPtr hWnd)
+    {
+        var (x, y, w, h) = _win32.GetWindowRect(hWnd);
+        _canvas.SetWindowFromScreen(hWnd, x, y, w, h);
+        _canvas.SetPinnedToScreen(hWnd, false);
+        _lastScreen[hWnd] = (x, y, w, h);
+    }
+
+    private WindowRect ResolvePinnedScreenRect(IntPtr hWnd, WorldRect world)
+    {
+        var (ax, ay, aw, ah) = _win32.GetWindowRect(hWnd);
+        var actual = new WindowRect(ax, ay, aw, ah);
+        if (!_clippedWindows.Contains(hWnd) && IsOnAnyScreen(actual.X, actual.Y, actual.W, actual.H))
+            return actual;
+
+        var projected = _canvas.WorldToScreen(world);
+        if (IsOnAnyScreen(projected.X, projected.Y, projected.W, projected.H))
+            return projected;
+
+        return MoveIntoNearestScreen(projected);
+    }
+
+    private WindowRect MoveIntoNearestScreen(WindowRect rect)
+    {
+        var screens = _win32.GetScreenWorkingAreas();
+        (int x, int y, int w, int h) screen = screens.Count > 0
+            ? screens[0]
+            : (0, 0, FallbackScreenWidth, FallbackScreenHeight);
+        int rectCx = rect.X + rect.W / 2;
+        int rectCy = rect.Y + rect.H / 2;
+        long bestDistance = long.MaxValue;
+
+        foreach (var candidate in screens)
+        {
+            int screenCx = candidate.x + candidate.w / 2;
+            int screenCy = candidate.y + candidate.h / 2;
+            long dx = rectCx - screenCx;
+            long dy = rectCy - screenCy;
+            long distance = dx * dx + dy * dy;
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                screen = candidate;
+            }
+        }
+
+        int w = rect.W > 0 ? rect.W : Math.Min(FallbackScreenWidth, Math.Max(1, screen.w));
+        int h = rect.H > 0 ? rect.H : Math.Min(FallbackScreenHeight, Math.Max(1, screen.h));
+        int maxX = screen.x + Math.Max(0, screen.w - w);
+        int maxY = screen.y + Math.Max(0, screen.h - h);
+        int x = Math.Clamp(rect.X, screen.x, maxX);
+        int y = Math.Clamp(rect.Y, screen.y, maxY);
+
+        return new WindowRect(x, y, w, h);
     }
 
     /// <summary>

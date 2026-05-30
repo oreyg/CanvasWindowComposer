@@ -37,7 +37,8 @@ internal sealed class OverviewWindowList
         _win32.EnumWindows(hWnd =>
         {
             if (_canvas.Windows.TryGetValue(hWnd, out var world) &&
-                world.State == WindowState.Normal)
+                world.State == WindowState.Normal &&
+                !world.PinnedToScreen)
             {
                 _windows.Add(new Entry(hWnd, world));
             }

@@ -10,6 +10,7 @@ internal struct WorldRect
     public double X, Y, W, H;
     public WindowState State;
     public long ZOrder;
+    public bool PinnedToScreen;
 }
 
 /// <summary>Screen-space projection of a <see cref="WorldRect"/>.</summary>
@@ -89,6 +90,9 @@ internal sealed class Canvas
 
     /// <summary>Raised when a window is maximized or restored from maximize.</summary>
     public event Action<IntPtr>? MaximizeChanged;
+
+    /// <summary>Raised when a window is pinned to the physical screen or returned to the canvas.</summary>
+    public event Action<IntPtr>? PinnedChanged;
 
     /// <summary>Raised when a window is stamped as the new foreground via <see cref="BringToForeground"/>.</summary>
     public event Action<IntPtr>? FrontChanged;
@@ -196,7 +200,7 @@ internal sealed class Canvas
 
         foreach (var (hWnd, r) in _windows)
         {
-            if (r.State != WindowState.Normal) continue;
+            if (r.State != WindowState.Normal || r.PinnedToScreen) continue;
             any = true;
             if (r.X < minX) minX = r.X;
             if (r.Y < minY) minY = r.Y;
@@ -244,6 +248,21 @@ internal sealed class Canvas
     public bool IsMaximized(IntPtr hWnd)
     {
         return GetWindowState(hWnd) == WindowState.Maximized;
+    }
+
+    public bool IsPinnedToScreen(IntPtr hWnd)
+    {
+        return _windows.TryGetValue(hWnd, out var r) && r.PinnedToScreen;
+    }
+
+    public void SetPinnedToScreen(IntPtr hWnd, bool pinned)
+    {
+        if (!_windows.TryGetValue(hWnd, out var r)) return;
+        if (r.PinnedToScreen == pinned) return;
+
+        r.PinnedToScreen = pinned;
+        _windows[hWnd] = r;
+        PinnedChanged?.Invoke(hWnd);
     }
 
     public void CollapseWindow(IntPtr hWnd)

@@ -81,6 +81,7 @@ internal sealed class MinimapOverlay : Form
         canvas.CameraChanged       += NotifyCanvasChanged;
         canvas.CollapseChanged     += _ => NotifyCanvasChanged();
         canvas.MaximizeChanged     += _ => NotifyCanvasChanged();
+        canvas.PinnedChanged       += _ => NotifyCanvasChanged();
         canvas.FrontChanged        += _ => RefreshSnapshotIfVisible();
         input.DragStarted          += BringToFront;
         desktops.AfterStateLoaded  += NotifyCanvasChanged;
@@ -118,7 +119,7 @@ internal sealed class MinimapOverlay : Form
     {
         _orderedWindows.Clear();
         foreach (var kv in _canvas.Windows)
-            if (kv.Value.State == CanvasDesktop.WindowState.Normal)
+            if (kv.Value.State == CanvasDesktop.WindowState.Normal && !kv.Value.PinnedToScreen)
                 _orderedWindows.Add(kv.Value);
         _orderedWindows.Sort(ZOrderDescending);
 

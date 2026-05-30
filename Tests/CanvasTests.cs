@@ -394,6 +394,61 @@ public class CanvasTests
         Assert.Null(canvas.GetWorldExtents());
     }
 
+    // ==================== PINNED TO SCREEN ====================
+
+    [Fact]
+    public void SetPinnedToScreen_MarksWindowPinned()
+    {
+        var canvas = new Canvas();
+        canvas.SetWindow((IntPtr)1, 100, 200, 800, 600);
+
+        canvas.SetPinnedToScreen((IntPtr)1, true);
+
+        Assert.True(canvas.IsPinnedToScreen((IntPtr)1));
+    }
+
+    [Fact]
+    public void SetWindow_PreservesPinnedFlag()
+    {
+        var canvas = new Canvas();
+        canvas.SetWindow((IntPtr)1, 100, 200, 800, 600);
+        canvas.SetPinnedToScreen((IntPtr)1, true);
+
+        canvas.SetWindow((IntPtr)1, 300, 400, 500, 600);
+
+        Assert.True(canvas.IsPinnedToScreen((IntPtr)1));
+    }
+
+    [Fact]
+    public void GetWorldExtents_ExcludesPinnedWindows()
+    {
+        var canvas = new Canvas();
+        canvas.SetWindow((IntPtr)1, 0, 0, 100, 100);
+        canvas.SetWindow((IntPtr)2, 5000, 5000, 200, 200);
+        canvas.SetPinnedToScreen((IntPtr)2, true);
+
+        var ext = canvas.GetWorldExtents();
+        Assert.NotNull(ext);
+        var (_, _, maxX, maxY) = ext.Value;
+        Assert.Equal(100, maxX);
+        Assert.Equal(100, maxY);
+    }
+
+    [Fact]
+    public void SaveState_PersistsPinned()
+    {
+        var canvas = new Canvas();
+        canvas.SetWindow((IntPtr)1, 100, 200, 800, 600);
+        canvas.SetPinnedToScreen((IntPtr)1, true);
+
+        var state = canvas.SaveState();
+
+        canvas.SetPinnedToScreen((IntPtr)1, false);
+        canvas.LoadState(state);
+
+        Assert.True(canvas.IsPinnedToScreen((IntPtr)1));
+    }
+
     [Fact]
     public void SaveState_PersistsCollapsed()
     {
