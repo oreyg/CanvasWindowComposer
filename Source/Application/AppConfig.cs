@@ -13,6 +13,7 @@ internal interface IAppConfig
     bool DisableSearch { get; }
     bool DisableAltPan { get; }
     bool DisableGreedyDraw { get; }
+    bool ShowScreenFixedWindowsDuringPan { get; }
 
     /// <summary>
     /// When true, Alt+Q is not registered as a global hotkey, leaving it
@@ -52,6 +53,7 @@ internal sealed class AppConfig : IAppConfig
     public bool DisableSearch { get; private set; }
     public bool DisableAltPan { get; private set; }
     public bool DisableGreedyDraw { get; private set; } = true;
+    public bool ShowScreenFixedWindowsDuringPan { get; private set; } = true;
     public bool DisableMouseCurve { get; private set; }
     public bool DisableZoomHotkey { get; private set; }
 
@@ -73,8 +75,15 @@ internal sealed class AppConfig : IAppConfig
         DisableSearch = GetBool(values, "DisableSearch", defaultValue: false);
         DisableAltPan = GetBool(values, "DisableAltPan", defaultValue: false);
         DisableGreedyDraw = GetBool(values, "DisableGreedyDraw", defaultValue: true);
+        ShowScreenFixedWindowsDuringPan = GetBool(values, "ShowScreenFixedWindowsDuringPan", defaultValue: true);
         DisableMouseCurve = GetBool(values, "DisableMouseCurve", defaultValue: false);
         DisableZoomHotkey = GetBool(values, "DisableZoomHotkey", defaultValue: false);
+    }
+
+    public void SetShowScreenFixedWindowsDuringPan(bool value)
+    {
+        ShowScreenFixedWindowsDuringPan = value;
+        WriteBool("ShowScreenFixedWindowsDuringPan", value);
     }
 
     /// <summary>Watch config.ini for changes and reload automatically.</summary>
@@ -122,6 +131,9 @@ internal sealed class AppConfig : IAppConfig
 ; if this app terminates unexpectedly
 ;DisableGreedyDraw=true
 
+; Show pinned, maximized/fullscreen, and supported screen-fixed panels while panning
+;ShowScreenFixedWindowsDuringPan=true
+
 ; Disable Windows pointer acceleration curve on pan deltas
 ; (default off = curve on, pan tracks cursor; on = raw HID deltas)
 ;DisableMouseCurve=false
@@ -158,5 +170,46 @@ internal sealed class AppConfig : IAppConfig
         if (!values.TryGetValue(key, out string? val))
             return defaultValue;
         return val.Equals("true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void WriteBool(string key, bool value)
+    {
+        Directory.CreateDirectory(ConfigDir);
+        if (!File.Exists(ConfigPath))
+            WriteDefault();
+
+        string[] lines = File.ReadAllLines(ConfigPath);
+        string replacement = $"{key}={value.ToString().ToLowerInvariant()}";
+        bool replaced = false;
+
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string line = lines[i].TrimStart();
+            if (line.StartsWith(';') || line.StartsWith('#'))
+                continue;
+
+            int eq = line.IndexOf('=');
+            if (eq <= 0)
+                continue;
+
+            string existingKey = line[..eq].Trim();
+            if (!existingKey.Equals(key, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            lines[i] = replacement;
+            replaced = true;
+            break;
+        }
+
+        if (!replaced)
+        {
+            var updated = new List<string>(lines.Length + 2);
+            updated.AddRange(lines);
+            updated.Add("");
+            updated.Add(replacement);
+            lines = updated.ToArray();
+        }
+
+        File.WriteAllLines(ConfigPath, lines);
     }
 }

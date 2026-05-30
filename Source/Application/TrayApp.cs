@@ -44,7 +44,7 @@ internal sealed class TrayApp : ApplicationContext
         _canvas = new Canvas();
         _input = new Win32InputRouter(_config);
         _wm = new WindowManager(_canvas, winApi, _config, _input, _clock, _vds, useAsyncProjection: true);
-        _overview = new OverviewManager(_canvas, _wm, winApi, _input, _screens);
+        _overview = new OverviewManager(_canvas, _wm, winApi, _input, _config, _screens);
         _overview.Warmup();
         _foreground = new ForegroundCoordinator(_canvas, _overview, _input, _clock, _screens);
         _desktops = new DesktopStateCache(_canvas, _wm, _overview, _vds);
@@ -58,6 +58,13 @@ internal sealed class TrayApp : ApplicationContext
         _bgTimer.Start();
 
         var toggleItem = new ToolStripMenuItem("Enabled", null, OnToggle) { Checked = true };
+        var showScreenFixedItem = new ToolStripMenuItem(
+            "Show Pinned/Fullscreen While Panning",
+            null,
+            OnToggleScreenFixedWindowsDuringPan)
+        {
+            Checked = _config.ShowScreenFixedWindowsDuringPan
+        };
         var refreshItem = new ToolStripMenuItem("Refresh", null, OnRefresh);
         var openConfigItem = new ToolStripMenuItem("Open Config Directory", null,
             (_, _) => System.Diagnostics.Process.Start("explorer.exe", AppConfig.ConfigDir));
@@ -67,6 +74,7 @@ internal sealed class TrayApp : ApplicationContext
         menu.Items.Add(new ToolStripLabel("Canvas Desktop") { Font = new Font("Segoe UI", 9, FontStyle.Bold) });
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(toggleItem);
+        menu.Items.Add(showScreenFixedItem);
         menu.Items.Add(refreshItem);
         menu.Items.Add(openConfigItem);
         menu.Items.Add(new ToolStripSeparator());
@@ -107,6 +115,17 @@ internal sealed class TrayApp : ApplicationContext
     private void OnRefresh(object? sender, EventArgs e)
     {
         _wm.RefreshAllWindows();
+    }
+
+    private void OnToggleScreenFixedWindowsDuringPan(object? sender, EventArgs e)
+    {
+        bool enabled = !_config.ShowScreenFixedWindowsDuringPan;
+        _config.SetShowScreenFixedWindowsDuringPan(enabled);
+
+        if (sender is ToolStripMenuItem item)
+            item.Checked = enabled;
+
+        _overview.RefreshConfig();
     }
 
     private void OnExit(object? sender, EventArgs e)
