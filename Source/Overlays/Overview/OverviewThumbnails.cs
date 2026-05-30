@@ -74,6 +74,7 @@ internal sealed class OverviewThumbnails
         public IntPtr HWnd;
         public IntPtr Thumb;
         public WorldRect World;
+        public bool ScreenFixed;
         // DWM frame inset, cached at registration time. Stable while the entry
         // is in the target list — maximize/unmaximize force a re-register which
         // refreshes this, so the only drift case is custom-chrome apps that
@@ -458,18 +459,15 @@ internal sealed class OverviewThumbnails
         {
             var entry = _windows.Windows[i];
 
-            int sx = (int)((entry.World.X - camX) * zoom);
-            int sy = (int)((entry.World.Y - camY) * zoom);
-            int sw = Math.Max(1, (int)(entry.World.W * zoom));
-            int sh = Math.Max(1, (int)(entry.World.H * zoom));
-            int right = sx + sw;
-            int bottom = sy + sh;
+            var screen = GetScreenRect(entry, camX, camY, zoom);
+            int right = screen.X + screen.W;
+            int bottom = screen.Y + screen.H;
 
             foreach (var pass in _passes)
             {
                 var bounds = pass.Screen.Bounds;
-                if (right <= bounds.Left || sx >= bounds.Right ||
-                    bottom <= bounds.Top || sy >= bounds.Bottom) continue;
+                if (right <= bounds.Left || screen.X >= bounds.Right ||
+                    bottom <= bounds.Top || screen.Y >= bounds.Bottom) continue;
 
                 if (!_scratchTargetByPass.TryGetValue(pass, out var list))
                 {
@@ -515,6 +513,7 @@ internal sealed class OverviewThumbnails
                 {
                     var entry = current[ci];
                     entry.World = target[k].World;
+                    entry.ScreenFixed = target[k].ScreenFixed;
                     current[writeIdx++] = entry;
                     k++;
                 }
@@ -537,6 +536,7 @@ internal sealed class OverviewThumbnails
                     current.Add(new ActiveEntry
                     {
                         HWnd = cand.HWnd, Thumb = thumb, World = cand.World,
+                        ScreenFixed = cand.ScreenFixed,
                         InsetL = iL, InsetT = iT, InsetR = iR, InsetB = iB
                     });
                     InvalidateCameraCache(); // new thumb needs initial rect push
@@ -582,22 +582,17 @@ internal sealed class OverviewThumbnails
 
             foreach (var entry in list)
             {
-                var world = entry.World;
+                var screen = GetScreenRect(entry, camX, camY, zoom);
 
-                int sx = (int)((world.X - camX) * zoom);
-                int sy = (int)((world.Y - camY) * zoom);
-                int sw = Math.Max(1, (int)(world.W * zoom));
-                int sh = Math.Max(1, (int)(world.H * zoom));
+                int fL = entry.ScreenFixed ? entry.InsetL : (int)(entry.InsetL * zoom);
+                int fT = entry.ScreenFixed ? entry.InsetT : (int)(entry.InsetT * zoom);
+                int fR = entry.ScreenFixed ? entry.InsetR : (int)(entry.InsetR * zoom);
+                int fB = entry.ScreenFixed ? entry.InsetB : (int)(entry.InsetB * zoom);
 
-                int fL = (int)(entry.InsetL * zoom);
-                int fT = (int)(entry.InsetT * zoom);
-                int fR = (int)(entry.InsetR * zoom);
-                int fB = (int)(entry.InsetB * zoom);
-
-                int left   = sx + fL - pass.OriginX;
-                int top    = sy + fT - pass.OriginY;
-                int right  = sx + sw - fR - pass.OriginX;
-                int bottom = sy + sh - fB - pass.OriginY;
+                int left   = screen.X + fL - pass.OriginX;
+                int top    = screen.Y + fT - pass.OriginY;
+                int right  = screen.X + screen.W - fR - pass.OriginX;
+                int bottom = screen.Y + screen.H - fB - pass.OriginY;
 
                 var props = new DWM_THUMBNAIL_PROPERTIES
                 {
@@ -607,5 +602,36 @@ internal sealed class OverviewThumbnails
                 PInvoke.DwmUpdateThumbnailProperties(entry.Thumb, props);
             }
         }
+    }
+
+    private WindowRect GetScreenRect(OverviewWindowList.Entry entry, double camX, double camY, double zoom)
+    {
+        if (entry.ScreenFixed)
+        {
+            var (x, y, w, h) = _win32.GetWindowRect(entry.HWnd);
+            return new WindowRect(x, y, Math.Max(1, w), Math.Max(1, h));
+        }
+
+        return ProjectWorldToScreen(entry.World, camX, camY, zoom);
+    }
+
+    private WindowRect GetScreenRect(ActiveEntry entry, double camX, double camY, double zoom)
+    {
+        if (entry.ScreenFixed)
+        {
+            var (x, y, w, h) = _win32.GetWindowRect(entry.HWnd);
+            return new WindowRect(x, y, Math.Max(1, w), Math.Max(1, h));
+        }
+
+        return ProjectWorldToScreen(entry.World, camX, camY, zoom);
+    }
+
+    private static WindowRect ProjectWorldToScreen(WorldRect world, double camX, double camY, double zoom)
+    {
+        return new WindowRect(
+            (int)((world.X - camX) * zoom),
+            (int)((world.Y - camY) * zoom),
+            Math.Max(1, (int)(world.W * zoom)),
+            Math.Max(1, (int)(world.H * zoom)));
     }
 }
